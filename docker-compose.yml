@@ -29,6 +29,10 @@ services:
       gow.lan: "true"
       gow.lan.ip: "${WOLF_LAN_IP}"
       dld.storage: "${DLD_STORAGE:-local-lvm}"
+      # Wolf CT rootfs size — big enough for the Steam library / game data that
+      # persists on the container. Games live on the daemon storage (DLD_STORAGE),
+      # not the OS root.
+      dld.disksize: "${WOLF_DISK_SIZE:-100G}"
 
     environment:
       # Wolf state + the socket it drives (the host LXC2Docker socket).
