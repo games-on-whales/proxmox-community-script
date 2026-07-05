@@ -88,6 +88,7 @@ msg_ok "docker-lxc-daemon running"
 
 # ---------- 2. host prerequisites ----------
 msg_info "Installing virtual-input + runtime prerequisites"
+mkdir -p /etc/modules-load.d /etc/udev/rules.d /etc/tmpfiles.d
 modprobe uinput 2>/dev/null || true
 echo uinput > /etc/modules-load.d/uinput.conf
 curl -fsSL "${REPO_RAW}/85-wolf-virtual-inputs.rules" -o /etc/udev/rules.d/85-wolf-virtual-inputs.rules
@@ -121,6 +122,9 @@ if [ -n "$nvidia_node" ] && command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi 
   COMPOSE_ARGS+=(-f docker-compose.nvidia.yml)
   sed -i "s#^WOLF_RENDER_NODE=.*#WOLF_RENDER_NODE=${nvidia_node}#" "${DEST}/.env"
   msg_ok "NVIDIA GPU detected (${nvidia_node}) — using the NVIDIA overlay"
+elif [ -n "$nvidia_node" ]; then
+  msg_err "NVIDIA GPU found at ${nvidia_node} but nvidia-smi failed — driver not loaded (nvidia-drm modeset=1)?"
+  msg_info "Using the base profile for now (no GPU encode). Load the driver and re-run for hardware acceleration."
 else
   msg_ok "GPU: ${gpu} — using the base (Intel/AMD) profile"
 fi
