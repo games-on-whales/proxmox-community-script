@@ -129,6 +129,22 @@ else
   msg_ok "GPU: ${gpu} â€” using the base (Intel/AMD) profile"
 fi
 
+# ---------- 3b. Docker client (the daemon is the engine; we need the CLI) ----------
+if ! docker compose version >/dev/null 2>&1; then
+  msg_info "Installing the Docker CLI + compose plugin"
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  . /etc/os-release
+  codename="${VERSION_CODENAME:-bookworm}"
+  # Docker's repo can lag new Debian releases; fall back to bookworm.
+  curl -fsSL -o /dev/null "https://download.docker.com/linux/debian/dists/${codename}/Release" 2>/dev/null || codename=bookworm
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${codename} stable" > /etc/apt/sources.list.d/docker.list
+  apt-get update -qq
+  apt-get install -y docker-ce-cli docker-compose-plugin
+  msg_ok "Docker CLI + compose plugin installed (client only — not the engine)"
+fi
+
 # ---------- 4. bring up ----------
 msg_info "Pulling the Wolf image and starting the stack (first pull can take a while)"
 cd "$DEST"
