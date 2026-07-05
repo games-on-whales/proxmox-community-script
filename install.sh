@@ -97,6 +97,30 @@ curl -fsSL "${REPO_RAW}/tmpfiles.d/wolf-proxmox.conf" -o /etc/tmpfiles.d/wolf-pr
 systemd-tmpfiles --create /etc/tmpfiles.d/wolf-proxmox.conf
 msg_ok "uinput, udev rules, and tmpfiles installed"
 
+# ---------- 2b. relocate Wolf state off the OS root ----------
+# Wolf keeps its config AND per-app game data (profile-data — Steam libraries)
+# under /etc/wolf, normally the small OS root. Bind-mount /etc/wolf onto the
+# storage pool so game data has room (all Wolf paths stay /etc/wolf, so nothing
+# else changes). Auto-derived from a ZFS DLD_STORAGE mountpoint; override with
+# WOLF_STATE_DIR. Non-ZFS storage has no filesystem path, so state stays on root
+# unless WOLF_STATE_DIR is set explicitly.
+if [ -z "${WOLF_STATE_DIR:-}" ]; then
+  mp=$(zfs get -H -o value mountpoint "$STORAGE" 2>/dev/null)
+  case "$mp" in /*) [ -d "$mp" ] && WOLF_STATE_DIR="$mp/wolf" ;; esac
+fi
+if [ -n "${WOLF_STATE_DIR:-}" ] && [ "$WOLF_STATE_DIR" != "/etc/wolf" ] && ! mountpoint -q /etc/wolf; then
+  msg_info "Relocating Wolf state to $WOLF_STATE_DIR (off the OS root)"
+  mkdir -p "$WOLF_STATE_DIR" /etc/wolf
+  if [ -n "$(ls -A /etc/wolf 2>/dev/null)" ]; then
+    cp -a /etc/wolf/. "$WOLF_STATE_DIR/" 2>/dev/null && find /etc/wolf -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+  fi
+  mount --bind "$WOLF_STATE_DIR" /etc/wolf
+  grep -q " /etc/wolf " /etc/fstab 2>/dev/null || echo "$WOLF_STATE_DIR /etc/wolf none bind 0 0" >> /etc/fstab
+  msg_ok "Wolf state on $WOLF_STATE_DIR (bind-mounted to /etc/wolf)"
+elif ! mountpoint -q /etc/wolf && ! zfs get -H -o value mountpoint "$STORAGE" >/dev/null 2>&1; then
+  msg_info "DLD_STORAGE '$STORAGE' is not ZFS — Wolf state stays on /etc/wolf (OS root); set WOLF_STATE_DIR to a large filesystem for big game libraries."
+fi
+
 # ---------- 3. recipe + .env ----------
 msg_info "Fetching the Wolf recipe into ${DEST}"
 mkdir -p "$DEST"
