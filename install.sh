@@ -140,7 +140,9 @@ if ! docker compose version >/dev/null 2>&1; then
   # Docker's repo can lag new Debian releases; fall back to bookworm.
   curl -fsSL -o /dev/null "https://download.docker.com/linux/debian/dists/${codename}/Release" 2>/dev/null || codename=bookworm
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${codename} stable" > /etc/apt/sources.list.d/docker.list
-  apt-get update -qq
+  # Update only Docker's list â€” a fresh PVE has the enterprise repo enabled
+  # (401 without a subscription), which would fail a global apt-get update.
+  apt-get update -qq -o Dir::Etc::sourcelist="sources.list.d/docker.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
   apt-get install -y docker-ce-cli docker-compose-plugin
   msg_ok "Docker CLI + compose plugin installed (client only — not the engine)"
 fi
