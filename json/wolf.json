@@ -1,0 +1,33 @@
+{
+  "name": "Wolf (Games-on-Whales)",
+  "slug": "wolf",
+  "categories": [9],
+  "date_created": "2026-07-05",
+  "type": "pve",
+  "updateable": false,
+  "privileged": false,
+  "interface_port": 8080,
+  "documentation": "https://github.com/games-on-whales/proxmox-community-script",
+  "website": "https://games-on-whales.github.io/",
+  "logo": "https://raw.githubusercontent.com/games-on-whales/wolf/stable/docs/assets/wolf.png",
+  "description": "Stream virtual desktops and applications (including games) from a Proxmox VE host to Moonlight clients. Backed by docker-lxc-daemon (LXC2Docker): the daemon runs on the host and each Wolf session launches as a sibling Proxmox CT with GPU passthrough. Includes the Wolf Den management UI.",
+  "install_methods": [
+    {
+      "type": "default",
+      "script": "install.sh",
+      "resources": {
+        "cpu": null,
+        "ram": null,
+        "hdd": null,
+        "os": "Proxmox VE host",
+        "version": "8.x"
+      }
+    }
+  ],
+  "default_credentials": { "username": null, "password": null },
+  "notes": [
+    { "text": "Runs on the Proxmox host, not in a single CT: docker-lxc-daemon takes over /var/run/docker.sock and Wolf sessions become sibling Proxmox CTs.", "type": "warning" },
+    { "text": "Needs a free static LAN IP for the Wolf CT (Moonlight/mDNS discovery) and a GPU on the host (NVIDIA/Intel/AMD).", "type": "info" },
+    { "text": "Pair from Moonlight, then open http://<LAN_IP>:47989 for the PIN. Wolf Den UI on :8080.", "type": "info" }
+  ]
+}

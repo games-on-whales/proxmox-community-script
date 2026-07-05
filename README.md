@@ -7,6 +7,18 @@ This is the Proxmox counterpart of the SmoothNAS Wolf plugin: the same container
 shape, expressed as a Compose file against the host daemon, with the Wolf Den
 management UI bundled on `:8080`.
 
+## Quick install (Proxmox host)
+
+Run on your Proxmox VE node:
+
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/main/install.sh)"
+```
+
+It installs `docker-lxc-daemon`, the virtual-input/runtime prerequisites, and
+Wolf, prompting for the container storage and a static LAN IP (auto-detects the
+GPU + bridge). The manual steps below are the equivalent, broken out.
+
 ## How it works
 
 `docker-lxc-daemon` on the PVE host serves the Docker Engine API but backs every
