@@ -21,7 +21,10 @@ msg_info() { echo -e " ${YW}▶${CL} $*"; }
 msg_ok()   { echo -e " ${GN}✓${CL} $*"; }
 msg_err()  { echo -e " ${RD}✗${CL} $*" >&2; }
 die()      { msg_err "$*"; exit 1; }
-trap 'msg_err "install failed (line $LINENO)"' ERR
+# Report the command that failed, not just where: a bare line number sends
+# people to a script they have to fetch and count through before they can say
+# what went wrong.
+trap 'msg_err "install failed (line $LINENO): $BASH_COMMAND"' ERR
 
 REPO_RAW="https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/main"
 DAEMON_REPO="games-on-whales/LXC2Docker"
@@ -249,8 +252,12 @@ if command -v docker-lxc-daemon >/dev/null 2>&1; then
   msg_ok "docker-lxc-daemon already installed"
 else
   msg_info "Installing the latest docker-lxc-daemon"
+  # `set -o pipefail` makes this whole pipeline fail when the release carries no
+  # matching asset (grep exits 1) or when head closes the pipe early (SIGPIPE),
+  # and a bare assignment adopts that status -- which would abort here, before
+  # the check below ever runs. Let the empty result reach its own error message.
   deb_url=$(curl -fsSL "https://api.github.com/repos/${DAEMON_REPO}/releases/latest" \
-    | grep -oE 'https://[^"]+_amd64\.deb' | head -1)
+    | grep -oE 'https://[^"]+_amd64\.deb' | head -1) || deb_url=""
   [ -n "$deb_url" ] || die "No .deb found in ${DAEMON_REPO} releases."
   tmp=$(mktemp --suffix=.deb); curl -fsSL "$deb_url" -o "$tmp"
   apt-get install -y "$tmp"; rm -f "$tmp"
