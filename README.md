@@ -73,15 +73,35 @@ The Compose file reproduces the SmoothNAS `wolf-runtime` + `gpu-*` profiles:
    Configure its `--lan-*` bridge so CTs can take a static LAN IP.
 2. **GPU drivers loaded on the host** (Intel/AMD `/dev/dri`, or NVIDIA with
    `nvidia-drm modeset=1`). Confirm with `ls /dev/dri` / `nvidia-smi`.
-3. **Virtual-input udev rules** on the host:
+3. **NVIDIA only — `nvidia-container-toolkit` on the host**, for `nvidia-ctk`:
+   ```sh
+   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+     | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+   curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+     > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+   apt-get update && apt-get install -y nvidia-container-toolkit-base
+   nvidia-ctk cdi generate --format=json --output=/etc/cdi/nvidia.json
+   ```
+   The daemon injects the host driver into the CT by translating this CDI spec
+   into LXC mounts and device nodes — it does not pass the GPU through directly.
+   Without `nvidia-ctk` it logs `NVIDIA GPU setup failed ... (container will
+   start without GPU)` to its journal and builds the CT with **no driver
+   libraries and no `/dev/nvidia*`**, while `/dev/dri` still gets passed through.
+   Wolf then finds the NVIDIA render node, commits to the NVENC pipeline, and
+   panics in `eglInitialize` on the first stream. Moonlight reports that as
+   *"No video received from host"* naming UDP 47998/48000 — ports Wolf never
+   uses — so nothing on screen points at the GPU. The installer does all of this
+   for you and refuses to continue if it can't.
+4. **Virtual-input udev rules** on the host:
    ```sh
    install -m 0644 85-wolf-virtual-inputs.rules /etc/udev/rules.d/
    modprobe uinput
    udevadm control --reload-rules && udevadm trigger
    ```
-4. **A free static LAN IP** for the Wolf CT (Moonlight discovery relies on
+5. **A free static LAN IP** for the Wolf CT (Moonlight discovery relies on
    mDNS/multicast reaching the LAN).
-5. **Bind-mount source dirs on the host** — Wolf's `/etc/wolf` (state) and
+6. **Bind-mount source dirs on the host** — Wolf's `/etc/wolf` (state) and
    `/run/wolf` (runtime) are bind-mounted from the host, so they must exist
    before it starts (`/run` is tmpfs, so recreate `/run/wolf` on boot):
    ```sh
