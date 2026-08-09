@@ -62,16 +62,28 @@ prompt_choice() {
   CHOICE_IDX=$((choice - 1))
 }
 
-# Prompt for a whole number in [1, max]. Usage: prompt_number <text> <default> <max>
+# Prompt for a whole number in [1, max], re-asking until the answer is one.
+# Usage: prompt_number <text> <default> <max> [unit]
+#
+# <unit> is carried through the prompt, the default and the error, so every size
+# question says what it is measured in. A matching suffix on the answer is
+# ignored — "100", "100G" and "100 GB" all mean 100 — and anything else re-asks
+# rather than silently taking the default, which is how a mistyped size used to
+# turn into a volume nobody asked for.
 prompt_number() {
-  local prompt_text="$1" default="$2" max="$3" value
+  local prompt_text="$1" default="$2" max="$3" unit="${4:-}" value
+  local shown="${unit:+ $unit}"
   while true; do
-    if [ -t 0 ]; then read -rp "${prompt_text} [${default}]: " value; else value=""; fi
+    if [ -t 0 ]; then read -rp "${prompt_text} [${default}${shown}]: " value; else value=""; fi
+    value="${value//[[:space:]]/}"                       # "100 GB"
+    # A unit is only a unit when it trails a number: "100G" is 100, but "big" is
+    # not a size at all and has to come back as one so the question re-asks.
+    if [[ "$value" =~ ^([0-9]+)[A-Za-z]*$ ]]; then value="${BASH_REMATCH[1]}"; fi
     value="${value:-$default}"
     if [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= max )); then
       break
     fi
-    echo "Invalid value. Enter a number between 1 and ${max}."
+    echo "Invalid value. Enter a whole number between 1 and ${max}${shown}."
     [ -t 0 ] || die "No terminal to re-ask on — fix the preset value and re-run."
   done
   NUMBER_VALUE="$value"
@@ -132,8 +144,8 @@ if [ -n "$CT_DISK" ]; then
     die "WOLF_DISK_SIZE=${WOLF_DISK_SIZE} does not fit the ${STORAGE_GB} GB free on ${STORAGE}."
 else
   default_disk=100; [ "$default_disk" -le "$STORAGE_GB" ] || default_disk="$STORAGE_GB"
-  prompt_number "Disk size in GB for the Wolf CT (game data, ${STORAGE_GB} GB free)" \
-    "$default_disk" "$STORAGE_GB"
+  prompt_number "Disk size for the Wolf CT rootfs (${STORAGE_GB} GB free on ${STORAGE})" \
+    "$default_disk" "$STORAGE_GB" GB
   CT_DISK="$NUMBER_VALUE"
 fi
 
@@ -148,9 +160,9 @@ if [ -n "$STATE_GB" ]; then
   [[ "$STATE_GB" =~ ^[0-9]+$ ]] && [ "$STATE_GB" -ge 1 ] && [ "$STATE_GB" -le "$state_max" ] ||
     die "WOLF_STATE_SIZE=${WOLF_STATE_SIZE} does not fit the ${state_max} GB left on ${STORAGE} after the ${CT_DISK} GB CT rootfs."
 else
-  default_state=200; [ "$default_state" -le "$state_max" ] || default_state="$state_max"
-  prompt_number "Size in GB for the Wolf state volume (game data, ${state_max} GB available)" \
-    "$default_state" "$state_max"
+  default_state=100; [ "$default_state" -le "$state_max" ] || default_state="$state_max"
+  prompt_number "Size of the Wolf state volume (config, pairings, game data — ${state_max} GB available)" \
+    "$default_state" "$state_max" GB
   STATE_GB="$NUMBER_VALUE"
 fi
 
@@ -164,7 +176,7 @@ if [ -n "$CT_CPU" ]; then
     die "WOLF_CPUS=${CT_CPU} is not between 1 and the host's ${HOST_CPUS} cores."
 else
   default_cpu=4; [ "$default_cpu" -le "$HOST_CPUS" ] || default_cpu="$HOST_CPUS"
-  prompt_number "CPU cores for the Wolf CT (host has ${HOST_CPUS})" "$default_cpu" "$HOST_CPUS"
+  prompt_number "CPU cores for the Wolf CT (host has ${HOST_CPUS})" "$default_cpu" "$HOST_CPUS" cores
   CT_CPU="$NUMBER_VALUE"
 fi
 
@@ -174,7 +186,7 @@ if [ -n "$CT_RAM" ]; then
     die "WOLF_MEMORY=${WOLF_MEMORY} is not between 1 and the host's ${HOST_RAM_MB} MB."
 else
   default_ram=4096; [ "$default_ram" -le "$HOST_RAM_MB" ] || default_ram="$HOST_RAM_MB"
-  prompt_number "RAM in MB for the Wolf CT (host has ${HOST_RAM_MB})" "$default_ram" "$HOST_RAM_MB"
+  prompt_number "RAM for the Wolf CT (host has ${HOST_RAM_MB} MB)" "$default_ram" "$HOST_RAM_MB" MB
   CT_RAM="$NUMBER_VALUE"
 fi
 
@@ -312,7 +324,8 @@ echo "  IP:      ${LAN_IP}"
 echo "  Bridge:  ${BRIDGE_SPEC}"
 echo "  CPU:     ${CT_CPU} cores"
 echo "  RAM:     ${CT_RAM} MB"
-echo "  Disk:    ${CT_DISK} GB"
+echo "  Disk:    ${CT_DISK} GB (CT rootfs)"
+echo "  State:   ${STATE_GB} GB (/etc/wolf — config, pairings, game data)"
 echo "  Storage: ${STORAGE}"
 echo "  GPU:     ${gpu_labels[$gpu_idx]}"
 echo "  Apps:    ${IMAGE_TAG}"
@@ -422,6 +435,17 @@ ensure_nvidia_cdi() {
 # outlives the Wolf container, which is the point: an image update discards the
 # CT rootfs, so state cannot live there. WOLF_STATE_VOLUME adopts an existing
 # volume id; WOLF_STATE_VMID picks the owning id.
+
+# Bring a pvesm volume up so its path is a device that can actually be written
+# to. This is the same call pct/qm make before touching a guest disk, so it
+# covers every storage type and is a no-op on the file-based ones.
+activate_state_volume() {
+  perl -e 'use PVE::Storage; PVE::Storage::activate_volumes(PVE::Storage::config(), [$ARGV[0]]);' "$1" ||
+    die "Could not activate the Wolf state volume ${1} on ${STORAGE}."
+  # udev creates the device node, so it can lag the activation itself.
+  if command -v udevadm >/dev/null 2>&1; then udevadm settle --timeout=10 || true; fi
+}
+
 STATE_VOLUME="${WOLF_STATE_VOLUME:-}"
 if mountpoint -q /etc/wolf; then
   msg_ok "Wolf state volume already mounted at /etc/wolf"
@@ -465,6 +489,26 @@ else
   state_path=$(pvesm path "$STATE_VOLUME" 2>/dev/null) ||
     die "Could not resolve a path for ${STATE_VOLUME} on ${STORAGE}."
   [ -n "$state_path" ] || die "pvesm reported no path for ${STATE_VOLUME}."
+
+  # An allocated volume is not a usable one yet. PVE leaves guest volumes
+  # deactivated (PVE 9 creates LVM ones with autoactivation off), and for block
+  # storages `pvesm path` is lexical — it composes /dev/<vg>/<name> without
+  # looking to see whether anything is there. Without this, mkfs runs against a
+  # path with no device behind it and e2fsprogs reports "The file
+  # /dev/pve/vm-9000-wolf-state does not exist and no size was specified",
+  # which reads like the size question was ignored but has nothing to do with it.
+  activate_state_volume "$STATE_VOLUME"
+  [ -e "$state_path" ] ||
+    die "${STATE_VOLUME} is allocated but ${state_path} does not exist — the volume could not be activated."
+
+  # Nothing else will ever activate this volume: it belongs to no guest, so no
+  # pct start covers it, and the fstab entry below would find nothing to mount
+  # at boot. 'nofail' would then let Wolf come up against an empty /etc/wolf on
+  # the OS root and start collecting state there instead. Opt this one volume
+  # back into boot-time autoactivation; harmless where it does not apply.
+  case "$STORAGE_TYPE" in
+    lvm|lvmthin) lvchange --setautoactivation y "$state_path" >/dev/null 2>&1 || true ;;
+  esac
 
   # Format only a blank volume — a re-run must never reformat game data.
   if ! blkid -p "$state_path" >/dev/null 2>&1; then
@@ -528,8 +572,10 @@ set_env WOLF_CPUS        "$CT_CPU"
 set_env WOLF_MEMORY      "${CT_RAM}M"
 set_env WOLF_RENDER_NODE "$RENDER_NODE"
 set_env WOLF_IMAGE_TAG   "$IMAGE_TAG"
+set_env WOLF_STATE_SIZE  "${STATE_GB}G"
 # Record the volume that /etc/wolf came from, so a re-run adopts exactly this
-# one rather than rediscovering it.
+# one rather than rediscovering it — and so the uninstaller knows what it may
+# free.
 [ -n "${STATE_VOLUME:-}" ] && set_env WOLF_STATE_VOLUME "$STATE_VOLUME"
 
 # The NVIDIA overlay applies only when the chosen GPU is an NVIDIA one that the
@@ -586,4 +632,5 @@ echo -e " ${GN}Wolf on Proxmox is ready.${CL}"
 echo -e "   ${BL}Wolf Den UI:${CL}  http://${ip}:8080"
 echo -e "   ${BL}Moonlight:${CL}    add host ${ip}, then enter the PIN at http://${ip}:47989"
 echo -e "   ${BL}Config:${CL}       ${DEST}/.env  and  /etc/wolf/config.toml (or Wolf Den)"
+echo -e "   ${BL}Remove:${CL}       bash -c \"\$(curl -fsSL ${REPO_RAW}/uninstall.sh)\""
 echo

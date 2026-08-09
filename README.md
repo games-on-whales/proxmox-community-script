@@ -24,21 +24,45 @@ defaulting to the first entry, auto-selected when there is only one candidate.
 | Prompt | Candidates / bound | Default |
 | --- | --- | --- |
 | Storage for the Wolf CT | active `rootdir` storages, with free space (`pvesm status`) | first listed |
-| Disk size in GB (game data) | free space on the chosen storage | `100` |
-| CPU cores | `nproc` | `4` |
-| RAM in MB | `MemTotal` | `4096` |
+| Disk size, GB (CT rootfs) | free space on the chosen storage | `100 GB` |
+| State volume size, GB (config, pairings, game data) | what is left after the rootfs | `100 GB` |
+| CPU cores | `nproc` | `4 cores` |
+| RAM, MB | `MemTotal` | `4096 MB` |
 | GPU | render nodes under `/sys/class/drm/`, as `vendor name (driver, node)` | first listed |
 | Static LAN IP (CIDR) | must be CIDR | — |
 
 `nvidia_drm modeset=1` is probed before the GPU scan, since NVIDIA cards expose
 no render node without it. The bridge spec is derived from the LAN IP and the
 host's default route. To run unattended, preset `DLD_STORAGE`, `WOLF_LAN_IP`,
-`WOLF_DISK_SIZE`, `WOLF_CPUS`, `WOLF_MEMORY`, `WOLF_RENDER_NODE` (and optionally
-`WOLF_BRIDGE`) — anything left unset takes its default, and a preset that isn't
-a real candidate, or doesn't fit the host, aborts the install. The manual steps
-below are the equivalent, broken out.
+`WOLF_DISK_SIZE`, `WOLF_STATE_SIZE`, `WOLF_CPUS`, `WOLF_MEMORY`,
+`WOLF_RENDER_NODE` (and optionally `WOLF_BRIDGE`) — anything left unset takes
+its default, and a preset that isn't a real candidate, or doesn't fit the host,
+aborts the install. Every size question states its unit and accepts the unit
+back (`100`, `100G` and `100 GB` all mean the same); an answer that isn't a size
+re-asks rather than falling through to the default. The manual steps below are
+the equivalent, broken out.
 
 `bash tests/gather-dryrun.sh` exercises this section against a faked host.
+
+## Uninstall
+
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/main/uninstall.sh)"
+```
+
+Removes the Wolf CT and any session CTs, `docker-lxc-daemon`, the host
+prerequisites and `/opt/wolf-proxmox`, and unmounts `/etc/wolf`. The state
+volume — config, client pairings and the game library — is **kept**; pass
+`--purge-state` to free it, `--keep-daemon` to leave the daemon package
+installed, `--yes` to skip the confirmation.
+
+Removal has to go through Docker. The Wolf CT is declared
+`restart: unless-stopped`, so stopping it from outside Docker (`pct stop`) looks
+like a crash to the daemon's restart watcher and is undone within five seconds —
+which is why the container appears to come straight back. `docker rm -f` (what
+the uninstaller uses) clears the record the watcher reads, so it stays down.
+
+`bash tests/uninstall-dryrun.sh` exercises it against a faked host.
 
 ## How it works
 
@@ -161,12 +185,26 @@ per-app game data (Steam libraries) under `/etc/wolf`. The installer backs that
 with a **volume allocated from `DLD_STORAGE` by `pvesm`**, so it behaves the same
 on lvmthin, LVM, ZFS, dir or NFS — no host filesystem layout to arrange, and
 nothing on the OS root. Size it with `WOLF_STATE_SIZE` (GB, prompted at install
-time, default 200); set `WOLF_STATE_VOLUME` to adopt an existing volume id.
+time, default 100); set `WOLF_STATE_VOLUME` to adopt an existing volume id.
 
-The volume is owned by no guest (`vmid 0`) and lives outside the Wolf container
-on purpose: the daemon discards a warm CT rootfs whenever the image ref or
-digest changes, so state kept on the rootfs would be destroyed by a routine
-image update. Re-running the installer reuses the volume and never reformats it.
+The volume takes the first free VM ID from 9000 up — well clear of the ids the
+daemon hands to session CTs, so destroying a guest can never take the game
+library with it — and lives outside the Wolf container on purpose: the daemon
+discards a warm CT rootfs whenever the image ref or digest changes, so state
+kept on the rootfs would be destroyed by a routine image update. Re-running the
+installer reuses the volume and never reformats it.
+
+Because the volume belongs to no guest, nothing else ever activates it: PVE
+leaves guest volumes deactivated (PVE 9 creates LVM ones with autoactivation
+off) and no `pct start` covers this one. The installer activates it through
+`PVE::Storage` before formatting — without that, `mkfs` runs against a path with
+no device behind it and reports *"the file /dev/pve/vm-9000-wolf-state does not
+exist and no size was specified"*, which reads like the size question was
+ignored but is not related to it — and opts LVM volumes back into boot-time
+autoactivation so the `/etc/wolf` fstab entry has something to mount.
+
+`bash tests/state-volume-dryrun.sh` exercises this section against a faked
+storage layer.
 
 **CT sizing:** `WOLF_DISK_SIZE` sizes the Wolf CT's rootfs on `DLD_STORAGE`, and
 `WOLF_CPUS` / `WOLF_MEMORY` cap its cores and RAM. Leave the latter two unset
