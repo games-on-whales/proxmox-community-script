@@ -38,7 +38,9 @@ VOL="$FAKE/volume.img"
 pvesm() {
   case "$1" in
     list)  [ "${VOL_EXISTS:-0}" = 1 ] && echo "${STORAGE}:vm-0-wolf-state raw 214748364800 0"; return 0 ;;
-    alloc) : > "$VOL"; echo "successfully created '${STORAGE}:${4%G}'"; return 0 ;;
+    # The caller parses this output, so record the arguments out of band.
+    alloc) : > "$VOL"; echo "ALLOC-VMID=$3 NAME=$4" >> "$FAKE/alloc.log"
+           echo "successfully created '${STORAGE}:$4'"; return 0 ;;
     path)  [ -e "$VOL" ] || return 1; echo "$VOL"; return 0 ;;
   esac
 }
@@ -47,7 +49,12 @@ blkid() { [ "${FS_PRESENT:-0}" = 1 ] || return 2; case "$*" in *UUID*) echo "TES
 mkfs.ext4() { FS_PRESENT=1; echo "MKFS-RAN"; }
 mountpoint() { [ "${ALREADY_MOUNTED:-0}" = 1 ]; }
 # Record mounts; copy through so migration can be observed.
-mount() { echo "MOUNT $*"; MOUNTED_AT="${!#}"; mkdir -p "$MOUNTED_AT"; }
+mount() {
+  echo "MOUNT $*"; MOUNTED_AT="${!#}"; mkdir -p "$MOUNTED_AT"
+  # VOL_HAS_DATA models a volume Wolf already owns: mounting it reveals content.
+  [ "${VOL_HAS_DATA:-0}" = 1 ] && echo live > "$MOUNTED_AT/config.toml"
+  return 0
+}
 # A real umount leaves the mount point empty again — model that, so the caller's
 # cleanup is exercised the way it behaves on a host.
 umount() { echo "UMOUNT $*"; rm -rf "${1:?}"/* "${1:?}"/.[!.]* 2>/dev/null || true; }
@@ -62,6 +69,7 @@ sed -n '/---------- 2b\. the Wolf state volume/,/^# ---------- 3\./p' install.sh
       -e "s#/etc/fstab#$FAKE/fstab#g" > "$FAKE/section.sh"
 # shellcheck disable=SC1090
 source "$FAKE/section.sh"
+echo "ALLOC: $(cat "$FAKE/alloc.log" 2>/dev/null || echo none)"
 echo "FSTAB: $(cat "$FAKE/fstab" 2>/dev/null || echo none)"
 echo "RESULT volume=$STATE_VOLUME"
 rm -rf "$FAKE"
@@ -84,6 +92,12 @@ expect "formats the blank volume"          "MKFS-RAN"                           
 expect "mounts it at /etc/wolf"            "MOUNT"                                 "$out"
 expect "records it in fstab by UUID"       "UUID=TEST-UUID-1234"                   "$out"
 
+# A real PVE node rejects vmid 0 outright ("value does not look like a valid
+# VM ID"), so the volume must be owned by a real, free, high id.
+out=$(run_state lvmthin)
+expect "owns the volume with a real vmid"  "ALLOC-VMID=9000"                       "$out"
+reject "never allocates against vmid 0"    "ALLOC-VMID=0 "                         "$out"
+
 # Block vs file storages get the naming pvesm expects.
 out=$(run_state dir)
 expect "file storages get a .raw name"     "wolf-state.raw"                        "$out"
@@ -103,6 +117,13 @@ reject "no allocation when already mounted" "Allocating"                        
 # State left on the OS root by an older install is carried onto the volume.
 out=$(run_state lvmthin SEED_STATE=1)
 expect "migrates existing /etc/wolf"       "Migrated the existing"                 "$out"
+
+# Caught on a real PVE node: once Wolf owns the volume, whatever is left under
+# the mount point is stale, and copying it over the top rolls config and
+# pairings backwards. Verified red against the pre-fix code on hardware.
+out=$(run_state lvmthin SEED_STATE=1 VOL_EXISTS=1 FS_PRESENT=1 VOL_HAS_DATA=1)
+expect "leaves a populated volume alone"   "already holds Wolf's data"             "$out"
+reject "stale root content never clobbers" "Migrated the existing"                 "$out"
 
 echo
 echo "  ${pass} passed, ${fail} failed"
