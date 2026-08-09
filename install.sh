@@ -94,10 +94,10 @@ command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y cu
 # --- Proxmox storage for the Wolf CT and every session CT ---
 # Candidates are the active rootdir storages, labelled "name (type, N GB free)".
 # The free figure also bounds the disk question below; pvesm reports 1K blocks.
-STORAGE_NAMES=(); STORAGE_FREE_GB=(); storage_labels=()
+STORAGE_NAMES=(); STORAGE_FREE_GB=(); STORAGE_TYPES=(); storage_labels=()
 while IFS='|' read -r name type enabled free_gb; do
   [[ "$enabled" == "1" ]] || continue
-  STORAGE_NAMES+=("$name"); STORAGE_FREE_GB+=("$free_gb")
+  STORAGE_NAMES+=("$name"); STORAGE_FREE_GB+=("$free_gb"); STORAGE_TYPES+=("$type")
   storage_labels+=("${name} (${type}, ${free_gb} GB free)")
 done < <(pvesm status --content rootdir 2>/dev/null |
   awk 'NR>1 {printf "%s|%s|%s|%d\n", $1, $2, ($3=="active"?"1":"0"), $6/1048576}')
@@ -122,6 +122,7 @@ else
 fi
 STORAGE="${STORAGE_NAMES[$storage_idx]}"
 STORAGE_GB="${STORAGE_FREE_GB[$storage_idx]}"
+STORAGE_TYPE="${STORAGE_TYPES[$storage_idx]}"
 
 # --- Wolf CT disk, in GB (the Steam library / game data lives here) ---
 [ "$STORAGE_GB" -gt 0 ] || die "Storage ${STORAGE} reports no free space."
@@ -134,6 +135,23 @@ else
   prompt_number "Disk size in GB for the Wolf CT (game data, ${STORAGE_GB} GB free)" \
     "$default_disk" "$STORAGE_GB"
   CT_DISK="$NUMBER_VALUE"
+fi
+
+# --- Wolf state volume, in GB (config, pairings, and the Steam library) ---
+# A volume allocated from DLD_STORAGE by pvesm, so it works the same on lvmthin,
+# LVM, ZFS, dir or NFS, and outlives the Wolf container. State cannot live on
+# the CT rootfs: the daemon discards a warm rootfs whenever the image ref or
+# digest changes, which would take the game library with it.
+STATE_GB="${WOLF_STATE_SIZE:-}"; STATE_GB="${STATE_GB%[Gg]}"
+state_max=$(( STORAGE_GB - CT_DISK )); [ "$state_max" -ge 1 ] || state_max=1
+if [ -n "$STATE_GB" ]; then
+  [[ "$STATE_GB" =~ ^[0-9]+$ ]] && [ "$STATE_GB" -ge 1 ] && [ "$STATE_GB" -le "$state_max" ] ||
+    die "WOLF_STATE_SIZE=${WOLF_STATE_SIZE} does not fit the ${state_max} GB left on ${STORAGE} after the ${CT_DISK} GB CT rootfs."
+else
+  default_state=200; [ "$default_state" -le "$state_max" ] || default_state="$state_max"
+  prompt_number "Size in GB for the Wolf state volume (game data, ${state_max} GB available)" \
+    "$default_state" "$state_max"
+  STATE_GB="$NUMBER_VALUE"
 fi
 
 # --- CPU cores and RAM for the Wolf CT, bounded by the host ---
@@ -286,31 +304,72 @@ curl -fsSL "${REPO_RAW}/tmpfiles.d/wolf-proxmox.conf" -o /etc/tmpfiles.d/wolf-pr
 systemd-tmpfiles --create /etc/tmpfiles.d/wolf-proxmox.conf
 msg_ok "uinput, udev rules, and tmpfiles installed"
 
-# ---------- 2b. relocate Wolf state off the OS root ----------
-# Wolf keeps its config AND per-app game data (profile-data — Steam libraries)
-# under /etc/wolf, normally the small OS root. Bind-mount /etc/wolf onto the
-# storage pool so game data has room (all Wolf paths stay /etc/wolf, so nothing
-# else changes). Auto-derived from a ZFS DLD_STORAGE mountpoint; override with
-# WOLF_STATE_DIR. Non-ZFS storage has no filesystem path, so state stays on root
-# unless WOLF_STATE_DIR is set explicitly.
-if [ -z "${WOLF_STATE_DIR:-}" ]; then
-  # zfs is absent, or the storage is not a dataset, on a non-ZFS host. That is
-  # expected, not an error — but a bare assignment takes the command's non-zero
-  # status as its own, which `set -e` turns into an aborted install.
-  mp=$(zfs get -H -o value mountpoint "$STORAGE" 2>/dev/null) || mp=""
-  case "$mp" in /*) [ -d "$mp" ] && WOLF_STATE_DIR="$mp/wolf" ;; esac
-fi
-if [ -n "${WOLF_STATE_DIR:-}" ] && [ "$WOLF_STATE_DIR" != "/etc/wolf" ] && ! mountpoint -q /etc/wolf; then
-  msg_info "Relocating Wolf state to $WOLF_STATE_DIR (off the OS root)"
-  mkdir -p "$WOLF_STATE_DIR" /etc/wolf
-  if [ -n "$(ls -A /etc/wolf 2>/dev/null)" ]; then
-    cp -a /etc/wolf/. "$WOLF_STATE_DIR/" 2>/dev/null && find /etc/wolf -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+# ---------- 2b. the Wolf state volume ----------
+# Wolf keeps its config, its client pairings and per-app game data (profile-data
+# — Steam libraries) under /etc/wolf, which docker-compose.yml bind-mounts from
+# the host. Give it a volume allocated from DLD_STORAGE and mounted there.
+#
+# pvesm is the storage abstraction, so this is identical on lvmthin, LVM, ZFS,
+# dir and NFS: allocate, get a path, put a filesystem on it, mount. The volume
+# is owned by nothing else, so it survives the Wolf container being recreated
+# (an image update discards the CT rootfs, which is why state cannot live
+# there). WOLF_STATE_VOLUME overrides the volume id for an existing one.
+STATE_VOLUME="${WOLF_STATE_VOLUME:-}"
+if mountpoint -q /etc/wolf; then
+  msg_ok "Wolf state volume already mounted at /etc/wolf"
+else
+  # File-based storages (dir, nfs, cifs) name volumes with an image suffix;
+  # block ones (lvm, lvmthin, zfspool, rbd) take a bare name.
+  case "$STORAGE_TYPE" in
+    dir|nfs|cifs|glusterfs|cephfs) state_volname="vm-0-wolf-state.raw" ;;
+    *)                            state_volname="vm-0-wolf-state" ;;
+  esac
+
+  if [ -z "$STATE_VOLUME" ]; then
+    # Reuse the volume from an earlier run rather than allocating a second one.
+    STATE_VOLUME=$(pvesm list "$STORAGE" 2>/dev/null |
+      awk -v n="$state_volname" '$1 ~ n {print $1; exit}') || STATE_VOLUME=""
   fi
-  mount --bind "$WOLF_STATE_DIR" /etc/wolf
-  grep -q " /etc/wolf " /etc/fstab 2>/dev/null || echo "$WOLF_STATE_DIR /etc/wolf none bind 0 0" >> /etc/fstab
-  msg_ok "Wolf state on $WOLF_STATE_DIR (bind-mounted to /etc/wolf)"
-elif ! mountpoint -q /etc/wolf && ! zfs get -H -o value mountpoint "$STORAGE" >/dev/null 2>&1; then
-  msg_info "DLD_STORAGE '$STORAGE' is not ZFS — Wolf state stays on /etc/wolf (OS root); set WOLF_STATE_DIR to a large filesystem for big game libraries."
+
+  if [ -n "$STATE_VOLUME" ]; then
+    msg_info "Reusing the existing Wolf state volume ${STATE_VOLUME}"
+  else
+    msg_info "Allocating a ${STATE_GB} GB Wolf state volume on ${STORAGE}"
+    # vmid 0 = owned by no guest, so no CT destroy can take the game library.
+    STATE_VOLUME=$(pvesm alloc "$STORAGE" 0 "$state_volname" "${STATE_GB}G" 2>&1 |
+      awk '/successfully created/ {gsub(/'\''/, "", $NF); print $NF; exit}') || STATE_VOLUME=""
+    [ -n "$STATE_VOLUME" ] || STATE_VOLUME="${STORAGE}:${state_volname}"
+  fi
+
+  state_path=$(pvesm path "$STATE_VOLUME" 2>/dev/null) ||
+    die "Could not resolve a path for ${STATE_VOLUME} on ${STORAGE}."
+  [ -n "$state_path" ] || die "pvesm reported no path for ${STATE_VOLUME}."
+
+  # Format only a blank volume — a re-run must never reformat game data.
+  if ! blkid -p "$state_path" >/dev/null 2>&1; then
+    msg_info "Creating a filesystem on ${state_path}"
+    mkfs.ext4 -q -L wolf-state "$state_path"
+  fi
+
+  mkdir -p /etc/wolf
+  # Carry over anything an earlier install left on the OS root.
+  state_seed=""
+  if [ -n "$(ls -A /etc/wolf 2>/dev/null)" ]; then
+    state_seed=$(mktemp -d)
+    mount "$state_path" "$state_seed"
+    cp -a /etc/wolf/. "$state_seed/"
+    umount "$state_seed" || die "Could not unmount ${state_seed} after seeding the state volume."
+    # An empty temp dir left behind is harmless; never fail the install over it.
+    rmdir "$state_seed" 2>/dev/null || true
+    msg_info "Migrated the existing /etc/wolf contents onto the volume"
+  fi
+
+  mount "$state_path" /etc/wolf
+  state_uuid=$(blkid -s UUID -o value "$state_path" 2>/dev/null) || state_uuid=""
+  if [ -n "$state_uuid" ] && ! grep -q " /etc/wolf " /etc/fstab 2>/dev/null; then
+    echo "UUID=${state_uuid} /etc/wolf ext4 defaults,nofail 0 2" >> /etc/fstab
+  fi
+  msg_ok "Wolf state volume ${STATE_VOLUME} mounted at /etc/wolf"
 fi
 
 # ---------- 3. recipe + .env ----------

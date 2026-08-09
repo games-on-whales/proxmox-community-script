@@ -126,11 +126,17 @@ can fall back to llvmpipe software rendering, which Wolf's NVIDIA encode
 pipeline fails to negotiate, yielding a black screen), and installs `fake-udev`. Edit `/etc/wolf/config.toml`
 afterwards (or use Wolf Den) to customise apps; it is preserved across restarts.
 
-**Game data / disk space:** Wolf stores its state and per-app game data (Steam
-libraries) under `/etc/wolf`. On Proxmox that's the OS root, which is small. The
-installer bind-mounts `/etc/wolf` onto the storage pool (`WOLF_STATE_DIR`, auto
-for ZFS `DLD_STORAGE`) so game libraries have room. For non-ZFS storage, set
-`WOLF_STATE_DIR` to a large filesystem path before installing.
+**Game data / disk space:** Wolf stores its state, its client pairings and
+per-app game data (Steam libraries) under `/etc/wolf`. The installer backs that
+with a **volume allocated from `DLD_STORAGE` by `pvesm`**, so it behaves the same
+on lvmthin, LVM, ZFS, dir or NFS — no host filesystem layout to arrange, and
+nothing on the OS root. Size it with `WOLF_STATE_SIZE` (GB, prompted at install
+time, default 200); set `WOLF_STATE_VOLUME` to adopt an existing volume id.
+
+The volume is owned by no guest (`vmid 0`) and lives outside the Wolf container
+on purpose: the daemon discards a warm CT rootfs whenever the image ref or
+digest changes, so state kept on the rootfs would be destroyed by a routine
+image update. Re-running the installer reuses the volume and never reformats it.
 
 **CT sizing:** `WOLF_DISK_SIZE` sizes the Wolf CT's rootfs on `DLD_STORAGE`, and
 `WOLF_CPUS` / `WOLF_MEMORY` cap its cores and RAM. Leave the latter two unset
