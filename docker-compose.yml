@@ -34,6 +34,11 @@ services:
       # not the OS root.
       dld.disksize: "${WOLF_DISK_SIZE:-100G}"
 
+    # CT cores/RAM. The daemon maps Docker's cpus/mem_limit onto the CT; 0 means
+    # uncapped (all host cores / all host RAM), which is the daemon's default.
+    cpus: ${WOLF_CPUS:-0}
+    mem_limit: ${WOLF_MEMORY:-0}
+
     environment:
       # Wolf state + the socket it drives (the host LXC2Docker socket).
       HOST_APPS_STATE_FOLDER: /etc/wolf
