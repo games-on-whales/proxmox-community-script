@@ -44,6 +44,16 @@ pvesm() {
     path)  [ -e "$VOL" ] || return 1; echo "$VOL"; return 0 ;;
   esac
 }
+# Activation goes through PVE::Storage, so the perl call stands in for it.
+# ACTIVATE_NOOP models the failure this section exists to prevent: the volume is
+# allocated, activation reports success, and the device node still is not there.
+perl() {
+  echo "ACTIVATE ${!#}"
+  if [ "${ACTIVATE_NOOP:-0}" = 1 ]; then rm -f "$VOL"; fi
+  return 0
+}
+# The caller silences lvchange, so record the arguments out of band.
+lvchange() { echo "LVCHANGE $*" >> "$FAKE/lvchange.log"; }
 # A blank volume has no filesystem; FS_PRESENT marks one that already does.
 blkid() { [ "${FS_PRESENT:-0}" = 1 ] || return 2; case "$*" in *UUID*) echo "TEST-UUID-1234" ;; esac; return 0; }
 mkfs.ext4() { FS_PRESENT=1; echo "MKFS-RAN"; }
@@ -59,7 +69,7 @@ mount() {
 # cleanup is exercised the way it behaves on a host.
 umount() { echo "UMOUNT $*"; rm -rf "${1:?}"/* "${1:?}"/.[!.]* 2>/dev/null || true; }
 STORAGE="${STORAGE:-teststore}"
-STATE_GB="${STATE_GB:-200}"
+STATE_GB="${STATE_GB:-100}"
 STORAGE_TYPE="${STORAGE_TYPE:-lvmthin}"
 
 # Section 2b only, with /etc/wolf and /etc/fstab redirected into the scratch dir.
@@ -70,6 +80,7 @@ sed -n '/---------- 2b\. the Wolf state volume/,/^# ---------- 3\./p' install.sh
 # shellcheck disable=SC1090
 source "$FAKE/section.sh"
 echo "ALLOC: $(cat "$FAKE/alloc.log" 2>/dev/null || echo none)"
+echo "LVM: $(cat "$FAKE/lvchange.log" 2>/dev/null || echo none)"
 echo "FSTAB: $(cat "$FAKE/fstab" 2>/dev/null || echo none)"
 echo "RESULT volume=$STATE_VOLUME"
 rm -rf "$FAKE"
@@ -87,10 +98,30 @@ echo "install.sh Wolf state volume:"
 
 # A fresh install allocates, formats, and mounts.
 out=$(run_state lvmthin)
-expect "allocates on a blank storage"      "Allocating a 200 GB Wolf state volume" "$out"
+expect "allocates on a blank storage"      "Allocating a 100 GB Wolf state volume" "$out"
 expect "formats the blank volume"          "MKFS-RAN"                              "$out"
 expect "mounts it at /etc/wolf"            "MOUNT"                                 "$out"
 expect "records it in fstab by UUID"       "UUID=TEST-UUID-1234"                   "$out"
+
+# Reported from a real install: pvesm alloc succeeds, PVE leaves the volume
+# deactivated, and `pvesm path` answers lexically for block storages — so mkfs
+# ran against a path with no device behind it and e2fsprogs said "does not exist
+# and no size was specified", which reads like the size prompt was ignored.
+out=$(run_state lvmthin)
+expect "activates the volume"              "ACTIVATE teststore:vm-9000-wolf-state" "$out"
+case "$out" in
+  *ACTIVATE*MKFS-RAN*) ok "activates before formatting" ;;
+  *) bad "activates before formatting" "ACTIVATE ... then MKFS-RAN" ;;
+esac
+# Nothing else ever activates this volume — it belongs to no guest — so the
+# fstab entry would find nothing at boot and 'nofail' would hide it.
+expect "opts LVM into autoactivation"      "LVCHANGE --setautoactivation y"        "$out"
+
+# When activation leaves no device behind, say so rather than handing the
+# missing path to mkfs and letting its message misdirect the reader.
+out=$(run_state lvmthin ACTIVATE_NOOP=1)
+expect "names an unusable volume"          "could not be activated"                "$out"
+reject "never formats a missing device"    "MKFS-RAN"                              "$out"
 
 # A real PVE node rejects vmid 0 outright ("value does not look like a valid
 # VM ID"), so the volume must be owned by a real, free, high id.

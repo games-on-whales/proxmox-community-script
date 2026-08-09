@@ -152,6 +152,24 @@ out=$(run_gather notty '' WOLF_IMAGE_TAG=fedora TAG_UNREACHABLE=1 WOLF_LAN_IP=19
 expect "ghcr being unreachable does not abort" "Could not reach ghcr.io"      "$out"
 expect "unreachable still installs the choice" "apps=fedora"                  "$out"
 
+# Every size question says what it is measured in, and answers that carry the
+# unit back mean what they say rather than being rejected.
+out=$(run_gather tty '2\n\n\n\n\n1\n1\n192.168.1.77/24\n')
+expect "the disk question is in GB"   "Disk size for the Wolf CT rootfs (6675 GB free on stores) [100 GB]" "$out"
+expect "the state question is in GB"  "game data — 6575 GB available) [100 GB]"                            "$out"
+expect "the RAM question is in MB"    "RAM for the Wolf CT (host has 64000 MB) [4096 MB]"                  "$out"
+expect "both sizes default to 100 GB" "RESULT storage=stores disk=100 state=100 cpu=4 ram=4096"            "$out"
+
+out=$(run_gather tty '2\n250G\n300 GB\n8\n8192M\n1\n1\n192.168.1.77/24\n')
+expect "answers may carry their unit" \
+  "RESULT storage=stores disk=250 state=300 cpu=8 ram=8192 gpu=/dev/dri/renderD128 vendor=NVIDIA" "$out"
+
+# A typo must re-ask. Silently taking the default is how someone ends up with a
+# volume they did not ask for and no sign that the question was ever answered.
+out=$(run_gather tty '2\nbig\n0\n120\n\n\n\n1\n1\n192.168.1.77/24\n')
+expect "a non-numeric size re-asks"   "Invalid value. Enter a whole number between 1 and 6675 GB." "$out"
+expect "the re-asked answer is used"  "RESULT storage=stores disk=120 state=100"                   "$out"
+
 # A single GPU needs no question — it is reported and used.
 out=$(run_gather notty '' TWO_GPUS=0 WOLF_LAN_IP=192.168.1.50/24)
 expect "single GPU is auto-selected" "Detected GPU: NVIDIA GeForce RTX 5080" "$out"
