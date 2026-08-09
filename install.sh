@@ -311,34 +311,47 @@ msg_ok "uinput, udev rules, and tmpfiles installed"
 #
 # pvesm is the storage abstraction, so this is identical on lvmthin, LVM, ZFS,
 # dir and NFS: allocate, get a path, put a filesystem on it, mount. The volume
-# is owned by nothing else, so it survives the Wolf container being recreated
-# (an image update discards the CT rootfs, which is why state cannot live
-# there). WOLF_STATE_VOLUME overrides the volume id for an existing one.
+# outlives the Wolf container, which is the point: an image update discards the
+# CT rootfs, so state cannot live there. WOLF_STATE_VOLUME adopts an existing
+# volume id; WOLF_STATE_VMID picks the owning id.
 STATE_VOLUME="${WOLF_STATE_VOLUME:-}"
 if mountpoint -q /etc/wolf; then
   msg_ok "Wolf state volume already mounted at /etc/wolf"
 else
-  # File-based storages (dir, nfs, cifs) name volumes with an image suffix;
-  # block ones (lvm, lvmthin, zfspool, rbd) take a bare name.
-  case "$STORAGE_TYPE" in
-    dir|nfs|cifs|glusterfs|cephfs) state_volname="vm-0-wolf-state.raw" ;;
-    *)                            state_volname="vm-0-wolf-state" ;;
-  esac
-
+  # The volume is found again by its "wolf-state" suffix, whatever id owns it.
   if [ -z "$STATE_VOLUME" ]; then
-    # Reuse the volume from an earlier run rather than allocating a second one.
     STATE_VOLUME=$(pvesm list "$STORAGE" 2>/dev/null |
-      awk -v n="$state_volname" '$1 ~ n {print $1; exit}') || STATE_VOLUME=""
+      awk '$1 ~ /wolf-state/ {print $1; exit}') || STATE_VOLUME=""
   fi
 
   if [ -n "$STATE_VOLUME" ]; then
     msg_info "Reusing the existing Wolf state volume ${STATE_VOLUME}"
   else
-    msg_info "Allocating a ${STATE_GB} GB Wolf state volume on ${STORAGE}"
-    # vmid 0 = owned by no guest, so no CT destroy can take the game library.
-    STATE_VOLUME=$(pvesm alloc "$STORAGE" 0 "$state_volname" "${STATE_GB}G" 2>&1 |
+    # pvesm rejects vmid 0 ("value does not look like a valid VM ID"), so the
+    # volume has to be owned by a real id. Take a high one that no guest holds,
+    # well clear of the ids the daemon hands to session CTs, so that destroying
+    # a guest can never take the game library with it.
+    state_vmid="${WOLF_STATE_VMID:-}"
+    if [ -z "$state_vmid" ]; then
+      state_vmid=9000
+      while [ -e "/etc/pve/qemu-server/${state_vmid}.conf" ] ||
+            [ -e "/etc/pve/lxc/${state_vmid}.conf" ]; do
+        state_vmid=$((state_vmid + 1))
+        [ "$state_vmid" -le 9999 ] || die "No free VM ID in 9000-9999 for the Wolf state volume."
+      done
+    fi
+
+    # File-based storages (dir, nfs, cifs) want an image suffix; block ones
+    # (lvm, lvmthin, zfspool, rbd) take the bare name.
+    case "$STORAGE_TYPE" in
+      dir|nfs|cifs|glusterfs|cephfs) state_volname="vm-${state_vmid}-wolf-state.raw" ;;
+      *)                            state_volname="vm-${state_vmid}-wolf-state" ;;
+    esac
+
+    msg_info "Allocating a ${STATE_GB} GB Wolf state volume on ${STORAGE} (id ${state_vmid})"
+    STATE_VOLUME=$(pvesm alloc "$STORAGE" "$state_vmid" "$state_volname" "${STATE_GB}G" 2>&1 |
       awk '/successfully created/ {gsub(/'\''/, "", $NF); print $NF; exit}') || STATE_VOLUME=""
-    [ -n "$STATE_VOLUME" ] || STATE_VOLUME="${STORAGE}:${state_volname}"
+    [ -n "$STATE_VOLUME" ] || die "pvesm could not allocate ${state_volname} on ${STORAGE}."
   fi
 
   state_path=$(pvesm path "$STATE_VOLUME" 2>/dev/null) ||
@@ -352,16 +365,29 @@ else
   fi
 
   mkdir -p /etc/wolf
-  # Carry over anything an earlier install left on the OS root.
-  state_seed=""
+  # Carry over anything an earlier install left on the OS root — but only onto a
+  # volume that is still empty. Once Wolf owns the volume its copy is the live
+  # one, and whatever remains underneath the mount point is stale: copying that
+  # over the top on a re-run would roll config and pairings backwards.
   if [ -n "$(ls -A /etc/wolf 2>/dev/null)" ]; then
     state_seed=$(mktemp -d)
     mount "$state_path" "$state_seed"
-    cp -a /etc/wolf/. "$state_seed/"
+    if [ -z "$(ls -A "$state_seed" 2>/dev/null)" ]; then
+      cp -a /etc/wolf/. "$state_seed/"
+      state_seeded=1
+    else
+      state_seeded=0
+    fi
     umount "$state_seed" || die "Could not unmount ${state_seed} after seeding the state volume."
     # An empty temp dir left behind is harmless; never fail the install over it.
     rmdir "$state_seed" 2>/dev/null || true
-    msg_info "Migrated the existing /etc/wolf contents onto the volume"
+    if [ "$state_seeded" = 1 ]; then
+      # Empty the mount point, so this never re-runs against stale content.
+      find /etc/wolf -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      msg_info "Migrated the existing /etc/wolf contents onto the volume"
+    else
+      msg_info "The state volume already holds Wolf's data — leaving it as it is"
+    fi
   fi
 
   mount "$state_path" /etc/wolf
@@ -393,6 +419,9 @@ set_env WOLF_DISK_SIZE   "${CT_DISK}G"
 set_env WOLF_CPUS        "$CT_CPU"
 set_env WOLF_MEMORY      "${CT_RAM}M"
 set_env WOLF_RENDER_NODE "$RENDER_NODE"
+# Record the volume that /etc/wolf came from, so a re-run adopts exactly this
+# one rather than rediscovering it.
+[ -n "${STATE_VOLUME:-}" ] && set_env WOLF_STATE_VOLUME "$STATE_VOLUME"
 
 # The NVIDIA overlay applies only when the chosen GPU is an NVIDIA one that the
 # driver actually answers for.
