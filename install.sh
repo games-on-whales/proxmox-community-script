@@ -287,7 +287,10 @@ msg_ok "uinput, udev rules, and tmpfiles installed"
 # WOLF_STATE_DIR. Non-ZFS storage has no filesystem path, so state stays on root
 # unless WOLF_STATE_DIR is set explicitly.
 if [ -z "${WOLF_STATE_DIR:-}" ]; then
-  mp=$(zfs get -H -o value mountpoint "$STORAGE" 2>/dev/null)
+  # zfs is absent, or the storage is not a dataset, on a non-ZFS host. That is
+  # expected, not an error — but a bare assignment takes the command's non-zero
+  # status as its own, which `set -e` turns into an aborted install.
+  mp=$(zfs get -H -o value mountpoint "$STORAGE" 2>/dev/null) || mp=""
   case "$mp" in /*) [ -d "$mp" ] && WOLF_STATE_DIR="$mp/wolf" ;; esac
 fi
 if [ -n "${WOLF_STATE_DIR:-}" ] && [ "$WOLF_STATE_DIR" != "/etc/wolf" ] && ! mountpoint -q /etc/wolf; then
