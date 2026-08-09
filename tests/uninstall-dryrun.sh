@@ -24,16 +24,38 @@ run_uninstall() {
 
   # Some of these calls are silenced by the script itself, so every stub records
   # what it was asked to do in a log the assertions read back.
-  { echo "LOG=$fake/calls.log"
+  : > "$fake/removed"; echo 0 > "$fake/rounds"
+  { echo "LOG=$fake/calls.log"; echo "FAKE=$fake"
     cat <<'STUBS'
 say()       { echo "$*" >> "$LOG"; }
 id()        { echo 0; }
+# A real docker forgets what it removed. RESURRECT_ROUNDS additionally models
+# the restart watcher putting the base Wolf CT back after its record was
+# deleted — `docker ps` lists it again — which is the race the sweep exists for.
 docker()    { case "$1" in
                 version) return 0 ;;
                 compose) say "COMPOSE $*" ;;
-                ps)      echo wolf; echo WolfSteam_1234; echo unrelated-app ;;
-                rm)      say "DOCKER-RM ${!#}" ;;
+                ps)      for n in wolf WolfSteam_1234 unrelated-app; do
+                           if grep -qx "$n" "$FAKE/removed"; then
+                             rounds=$(cat "$FAKE/rounds")
+                             if [ "$n" = wolf ] && [ "$rounds" -lt "${RESURRECT_ROUNDS:-0}" ]; then
+                               echo $((rounds + 1)) > "$FAKE/rounds"
+                               grep -vx wolf "$FAKE/removed" > "$FAKE/removed.tmp" || true
+                               mv "$FAKE/removed.tmp" "$FAKE/removed"
+                             else
+                               continue
+                             fi
+                           fi
+                           echo "$n"
+                         done ;;
+                rm)      say "DOCKER-RM ${!#}"; echo "${!#}" >> "$FAKE/removed" ;;
               esac; return 0; }
+# ORPHAN_CT models the end state the sweep cannot reach: a CT restarted after
+# its Docker record was deleted, so Docker cannot see it at all.
+pct()       { [ "${ORPHAN_CT:-0}" = 1 ] || return 0
+              printf 'VMID       Status     Lock         Name\n'
+              printf '100        running                 wolf\n'
+              printf '101        running                 unrelated-ct\n'; }
 systemctl() { say "SYSTEMCTL $*"; }
 apt-get()   { say "APT $*"; }
 dpkg()      { [ "${DAEMON_INSTALLED:-1}" = 1 ]; }
@@ -86,6 +108,30 @@ expect "drops the /etc/wolf fstab line"       "FSTAB-LEFT: UUID=root / ext4 defa
 # unless that is what was asked for.
 reject "never frees the state volume by default" "PVESM free"                              "$out"
 expect "says where the game data still is"    "local-lvm:vm-9000-wolf-state"               "$out"
+
+# The restart watcher can put a container back between the stop landing and the
+# record being deleted. One removal is not enough; the sweep has to converge.
+out=$(RESURRECT_ROUNDS=2 run_uninstall --yes)
+expect "removes a container that came back"   "DOCKER-RM wolf"                            "$out"
+expect "sweeps until nothing is left"         "Wolf containers removed"                   "$out"
+case $(grep -c '^DOCKER-RM wolf$' <<<"$out") in
+  1) bad "sweeps until nothing is left (once)" "wolf removed more than once" ;;
+  *) ok  "removes it again each time it returns" ;;
+esac
+
+# A daemon that never lets go is named, not silently left behind.
+out=$(RESURRECT_ROUNDS=99 run_uninstall --yes)
+expect "gives up loudly, not silently"        "Still present after 3 removal rounds"      "$out"
+
+# The end state the sweep cannot see: restarted after its record was deleted, so
+# Docker has no idea it exists. Only visible once the daemon is stopped.
+out=$(ORPHAN_CT=1 run_uninstall --yes)
+expect "names the orphaned CT"                "Proxmox CTs left behind with no Docker record: 100 (wolf)" "$out"
+reject "leaves unrelated CTs out of it"       "unrelated-ct"                              "$out"
+expect "says how to remove it"                "pct stop <vmid> && pct destroy <vmid>"     "$out"
+
+out=$(run_uninstall --yes)
+reject "no orphan warning when there is none" "left behind with no Docker record"         "$out"
 
 out=$(run_uninstall --yes --purge-state)
 expect "--purge-state frees the volume" "PVESM free local-lvm:vm-9000-wolf-state"          "$out"

@@ -56,13 +56,23 @@ volume — config, client pairings and the game library — is **kept**; pass
 `--purge-state` to free it, `--keep-daemon` to leave the daemon package
 installed, `--yes` to skip the confirmation.
 
-Removal has to go through Docker. The Wolf CT is declared
-`restart: unless-stopped`, so stopping it from outside Docker (`pct stop`) looks
-like a crash to the daemon's restart watcher and is undone within five seconds —
-which is why the container appears to come straight back. `docker rm -f` (what
-the uninstaller uses) clears the record the watcher reads, so it stays down.
+**Why stopping it by hand doesn't work.** The Wolf CT is declared
+`restart: unless-stopped`, and the daemon's restart watcher brings back anything
+it finds exited without a recorded stop. `pct stop` looks exactly like a crash to
+it and is undone within five seconds, which is why the container appears to come
+straight back. Removal has to go through Docker, which deletes the record the
+watcher reads — `docker rm -f`, what the uninstaller uses.
 
-`bash tests/uninstall-dryrun.sh` exercises it against a faked host.
+That is not sufficient on every daemon build, either: the watcher can restart a
+container in the window between the stop landing and the record being deleted,
+which leaves a CT running that nothing tracks any more. The uninstaller verifies
+each removal and sweeps up to three times, then — once the daemon is stopped and
+a CT count finally means something — names any Proxmox CT left standing with no
+Docker record, along with the `pct` commands to remove it. It does not destroy
+guests on its own.
+
+`bash tests/uninstall-dryrun.sh` exercises it against a faked host, including a
+container that comes back and one that outlives its record.
 
 ## How it works
 

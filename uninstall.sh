@@ -7,12 +7,17 @@
 # Reverses install.sh: takes the Wolf CT and any session CTs down, removes
 # docker-lxc-daemon and the host prerequisites, and unmounts /etc/wolf.
 #
-# The Wolf CT is declared restart:unless-stopped, so the daemon's restart
-# watcher brings it straight back if it is stopped from outside Docker — `pct
-# stop 100` looks like a crash to the watcher and is undone within five seconds.
-# Removing it has to go through Docker, which clears the record the watcher
-# reads. That is what this script does, and it is why stopping the CT by hand
-# never sticks.
+# The Wolf CT is declared restart:unless-stopped, and the daemon's restart
+# watcher brings back anything it finds exited without a recorded stop. `pct
+# stop 100` looks exactly like a crash to it and is undone within five seconds,
+# so stopping the CT by hand never sticks. Removal has to go through Docker,
+# which deletes the record the watcher reads.
+#
+# Even that is not enough on every daemon build: the watcher can restart a
+# container in the window between the stop landing and the record being
+# deleted, which leaves a CT running that nothing tracks any more. So each
+# removal is verified and retried, and anything still standing at the end is
+# named rather than left for the user to discover.
 #
 # The state volume — config, client pairings and the game library — is KEPT
 # unless --purge-state is given, because nothing else holds a copy of it.
@@ -90,13 +95,34 @@ if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
   # Whatever compose could not account for: the Wolf CT itself, and the session
   # CTs Wolf launches (named after the app that started them, WolfSteam_...).
   # They are Wolf's children, so they go with it.
-  leftovers=$(docker ps -a --format '{{.Names}}' 2>/dev/null |
-    grep -E '^(wolf$|Wolf|Prismlauncher)' || true)
-  for name in $leftovers; do
-    msg_info "Removing container ${name}"
-    docker rm -f "$name" >/dev/null 2>&1 || msg_err "Could not remove ${name}"
+  wolf_containers() {
+    docker ps -a --format '{{.Names}}' 2>/dev/null |
+      grep -E '^(wolf$|Wolf|Prismlauncher)' || true
+  }
+
+  # Sweep until nothing Wolf-shaped is left. A container that reappears was put
+  # back by the restart watcher between the stop and the delete, and removing it
+  # again wins: the second pass finds it already stopped. Three rounds is well
+  # past what that race needs and still terminates against a daemon that is
+  # genuinely refusing.
+  round=0
+  while [ "$round" -lt 3 ]; do
+    leftovers=$(wolf_containers)
+    [ -n "$leftovers" ] || break
+    for name in $leftovers; do
+      msg_info "Removing container ${name}"
+      docker rm -f "$name" >/dev/null 2>&1 || msg_err "Could not remove ${name}"
+    done
+    round=$((round + 1))
   done
-  msg_ok "Wolf containers removed"
+
+  leftovers=$(wolf_containers)
+  if [ -n "$leftovers" ]; then
+    msg_err "Still present after ${round} removal rounds: $(echo "$leftovers" | tr '\n' ' ')"
+    msg_err "Remove them by hand once the daemon is stopped, below."
+  else
+    msg_ok "Wolf containers removed"
+  fi
 else
   msg_info "No working Docker socket — skipping container removal"
 fi
@@ -110,6 +136,20 @@ if [ "$KEEP_DAEMON" = 0 ] && dpkg -s docker-lxc-daemon >/dev/null 2>&1; then
 fi
 systemctl daemon-reload
 msg_ok "docker-lxc-daemon removed"
+
+# With the daemon stopped, nothing can restart anything, so this is the first
+# moment a CT count means what it says. A Wolf CT still standing here was
+# restarted after its Docker record had already been deleted — Docker cannot
+# see it any more, and neither could the sweep above. Name it and the command
+# that removes it; destroying guests is not something to do unasked.
+# The name is the last column — `pct list` puts an optional Lock between Status
+# and Name, so a fixed field index reads the lock on any CT that has one.
+orphans=$(pct list 2>/dev/null |
+  awk 'NR>1 && $NF ~ /^(wolf$|Wolf|Prismlauncher)/ {printf "%s (%s) ", $1, $NF}') || orphans=""
+if [ -n "$orphans" ]; then
+  msg_err "Proxmox CTs left behind with no Docker record: ${orphans}"
+  msg_err "Remove each with: pct stop <vmid> && pct destroy <vmid>"
+fi
 
 # ---------- 3. the state mount ----------
 if mountpoint -q /etc/wolf; then
