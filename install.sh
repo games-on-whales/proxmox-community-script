@@ -304,6 +304,61 @@ curl -fsSL "${REPO_RAW}/tmpfiles.d/wolf-proxmox.conf" -o /etc/tmpfiles.d/wolf-pr
 systemd-tmpfiles --create /etc/tmpfiles.d/wolf-proxmox.conf
 msg_ok "uinput, udev rules, and tmpfiles installed"
 
+# ensure_nvidia_cdi — make the host NVIDIA driver reachable from inside the CT.
+#
+# The daemon does not pass the GPU through directly: it reads the CDI spec that
+# nvidia-ctk generates and translates it into LXC bind mounts, device nodes and
+# a mount hook (LXC2Docker internal/lxc/nvidia.go). No nvidia-ctk means no spec,
+# and the daemon then logs
+#
+#   buildPVEItems: NVIDIA GPU setup failed: ... "nvidia-ctk": executable file
+#   not found in $PATH (container will start without GPU)
+#
+# to its journal and builds the CT anyway — with no driver libraries and no
+# /dev/nvidia* nodes. That failure is silent where it matters, and worse than a
+# clean "no GPU": /dev/dri is still bind-mounted, so Wolf finds the nvidia render
+# node, logs "Using zero copy pipeline on Nvidia", and commits to the NVENC path
+# before discovering it has no libcuda.so.1 and no libEGL_nvidia. eglInitialize
+# then fails, the virtual compositor's setup_renderer panics, and the pipeline
+# dies before its first frame. Moonlight surfaces that as "No video received
+# from host", naming its own hardcoded UDP 47998/48000 — ports Wolf does not
+# even use — so nothing the user sees points at the GPU.
+ensure_nvidia_cdi() {
+  if ! command -v nvidia-ctk >/dev/null 2>&1; then
+    msg_info "Installing nvidia-container-toolkit (nvidia-ctk — GPU passthrough into the CT)"
+    install -m 0755 -d /usr/share/keyrings
+    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+      | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+      > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    # Update only NVIDIA's list — a fresh PVE has the enterprise repo enabled
+    # (401 without a subscription), which would fail a global apt-get update.
+    apt-get update -qq -o Dir::Etc::sourcelist="sources.list.d/nvidia-container-toolkit.list" \
+      -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+    # -base ships nvidia-ctk without the OCI runtime hooks: the daemon consumes
+    # the CDI spec itself and never invokes an NVIDIA container runtime.
+    apt-get install -y nvidia-container-toolkit-base
+    command -v nvidia-ctk >/dev/null 2>&1 ||
+      die "nvidia-ctk still not on PATH after installing nvidia-container-toolkit-base."
+    msg_ok "nvidia-container-toolkit installed"
+  fi
+
+  # Generate here rather than leaving it to the daemon's first container: a
+  # failure now is on screen, where the daemon's is a journal line nobody reads.
+  # Regenerating every run also clears a spec left stale by a driver upgrade,
+  # which would otherwise bind libraries that no longer exist.
+  msg_info "Generating the NVIDIA CDI spec"
+  mkdir -p /etc/cdi
+  nvidia-ctk cdi generate --format=json --output=/etc/cdi/nvidia.json >/dev/null ||
+    die "nvidia-ctk cdi generate failed — is the driver loaded (nvidia-drm modeset=1)?"
+  # An empty spec parses cleanly and injects nothing, reproducing the very
+  # half-configured CT this function exists to prevent. Insist on device nodes.
+  grep -q '"deviceNodes"' /etc/cdi/nvidia.json ||
+    die "/etc/cdi/nvidia.json declares no device nodes — the CT would start without a GPU."
+  msg_ok "NVIDIA CDI spec written to /etc/cdi/nvidia.json"
+}
+
 # ---------- 2b. the Wolf state volume ----------
 # Wolf keeps its config, its client pairings and per-app game data (profile-data
 # — Steam libraries) under /etc/wolf, which docker-compose.yml bind-mounts from
@@ -401,9 +456,17 @@ if [ "$RENDER_VENDOR" = "NVIDIA" ]; then
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
     COMPOSE_ARGS+=(-f docker-compose.nvidia.yml)
     msg_ok "NVIDIA GPU ${RENDER_NODE} — using the NVIDIA overlay"
+    ensure_nvidia_cdi
   else
-    msg_err "NVIDIA GPU at ${RENDER_NODE} but nvidia-smi failed — driver not loaded (nvidia-drm modeset=1)?"
-    msg_info "Using the base profile for now (no GPU encode). Load the driver and re-run for hardware acceleration."
+    # Falling back to the base profile here would install something that cannot
+    # work: WOLF_RENDER_NODE still points at the NVIDIA node, so Wolf selects the
+    # NVENC pipeline against a driver that isn't answering and dies in
+    # eglInitialize on the first stream — reported to the user as a Moonlight
+    # port error that never mentions the GPU. Refuse instead, and say what to fix.
+    msg_err "NVIDIA GPU selected (${RENDER_NODE}) but nvidia-smi is not answering — the driver is not loaded."
+    msg_info "Load it, then re-run:  modprobe nvidia_drm modeset=1   (and check 'nvidia-smi' works)"
+    msg_info "To use a different GPU instead, re-run and select it at the GPU prompt."
+    die "Refusing to install against an NVIDIA GPU with no working driver."
   fi
 else
   msg_ok "GPU: ${RENDER_VENDOR} (${RENDER_NODE}) — using the base (Intel/AMD) profile"
