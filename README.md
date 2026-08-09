@@ -16,8 +16,29 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-
 ```
 
 It installs `docker-lxc-daemon`, the virtual-input/runtime prerequisites, and
-Wolf, prompting for the container storage and a static LAN IP (auto-detects the
-GPU + bridge). The manual steps below are the equivalent, broken out.
+Wolf. Everything is asked up front — the same selection model as the Wolf
+[quickstart scripts](https://github.com/games-on-whales/wolf/tree/main/quickstart)
+this installer descends from: a numbered list of what the host actually has,
+defaulting to the first entry, auto-selected when there is only one candidate.
+
+| Prompt | Candidates / bound | Default |
+| --- | --- | --- |
+| Storage for the Wolf CT | active `rootdir` storages, with free space (`pvesm status`) | first listed |
+| Disk size in GB (game data) | free space on the chosen storage | `100` |
+| CPU cores | `nproc` | `4` |
+| RAM in MB | `MemTotal` | `4096` |
+| GPU | render nodes under `/sys/class/drm/`, as `vendor name (driver, node)` | first listed |
+| Static LAN IP (CIDR) | must be CIDR | — |
+
+`nvidia_drm modeset=1` is probed before the GPU scan, since NVIDIA cards expose
+no render node without it. The bridge spec is derived from the LAN IP and the
+host's default route. To run unattended, preset `DLD_STORAGE`, `WOLF_LAN_IP`,
+`WOLF_DISK_SIZE`, `WOLF_CPUS`, `WOLF_MEMORY`, `WOLF_RENDER_NODE` (and optionally
+`WOLF_BRIDGE`) — anything left unset takes its default, and a preset that isn't
+a real candidate, or doesn't fit the host, aborts the install. The manual steps
+below are the equivalent, broken out.
+
+`bash tests/gather-dryrun.sh` exercises this section against a faked host.
 
 ## How it works
 
@@ -110,6 +131,11 @@ libraries) under `/etc/wolf`. On Proxmox that's the OS root, which is small. The
 installer bind-mounts `/etc/wolf` onto the storage pool (`WOLF_STATE_DIR`, auto
 for ZFS `DLD_STORAGE`) so game libraries have room. For non-ZFS storage, set
 `WOLF_STATE_DIR` to a large filesystem path before installing.
+
+**CT sizing:** `WOLF_DISK_SIZE` sizes the Wolf CT's rootfs on `DLD_STORAGE`, and
+`WOLF_CPUS` / `WOLF_MEMORY` cap its cores and RAM. Leave the latter two unset
+and the CT is uncapped — all host cores and RAM, the daemon's default. Session
+CTs that Wolf launches are sized separately, by Wolf.
 
 ## Controllers
 
