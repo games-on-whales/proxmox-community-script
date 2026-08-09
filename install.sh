@@ -235,6 +235,58 @@ else
 fi
 RENDER_NODE="${GPU_RENDER_NODES[$gpu_idx]}"; RENDER_VENDOR="${GPU_VENDORS[$gpu_idx]}"
 
+# --- Which build of the GOW app images to run ---
+# WOLF_IMAGE_TAG pins every app image (firefox, steam, retroarch, …) and the
+# pulseaudio sidecar; startup-app.sh rewrites config.toml to it on each start.
+# Both flavours are published for every app image this recipe seeds.
+IMAGE_TAG="${WOLF_IMAGE_TAG:-}"
+if [ -n "$IMAGE_TAG" ]; then
+  msg_info "App images: ${IMAGE_TAG}"
+else
+  image_tags=(edge fedora)
+  image_labels=(
+    "edge — Ubuntu-based, the tested default"
+    "fedora — Fedora-based (newer Mesa; see the NVIDIA note below)"
+  )
+  prompt_choice "Which build of the GOW app images should Wolf run" "${image_labels[@]}"
+  IMAGE_TAG="${image_tags[$CHOICE_IDX]}"
+  msg_info "App images: ${IMAGE_TAG}"
+fi
+# startup-app.sh rejects anything else, so fail here rather than at first boot.
+[[ "$IMAGE_TAG" =~ ^[A-Za-z0-9._-]+$ ]] ||
+  die "WOLF_IMAGE_TAG='${IMAGE_TAG}' is not a valid image tag."
+
+# Ask the registry whether the tag is real, rather than trusting a list here.
+# A tag Wolf cannot pull surfaces as an app that just fails to launch, long
+# after the installer has finished. Network trouble is not the same as a
+# missing tag, so only a definite answer is fatal.
+image_tag_published() { # image_tag_published <image> <tag>
+  local tok
+  tok=$(curl -fsSL --max-time 15 \
+    "https://ghcr.io/token?scope=repository:games-on-whales/$1:pull&service=ghcr.io" 2>/dev/null |
+    sed -E 's/.*"token":"([^"]+)".*/\1/') || return 2
+  [ -n "$tok" ] || return 2
+  curl -fsS --max-time 15 -o /dev/null -H "Authorization: Bearer $tok" \
+    "https://ghcr.io/v2/games-on-whales/$1/manifests/$2" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json' \
+    -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+    -H 'Accept: application/vnd.oci.image.manifest.v1+json' 2>/dev/null
+}
+for probe_image in steam pulseaudio; do
+  # `set -e` would take a bare call's non-zero status as fatal before $? is
+  # ever read — the whole point here is to inspect that status.
+  probe_rc=0
+  image_tag_published "$probe_image" "$IMAGE_TAG" || probe_rc=$?
+  case "$probe_rc" in
+    0) : ;;
+    2) msg_info "Could not reach ghcr.io to confirm ${probe_image}:${IMAGE_TAG} — continuing." ;;
+    *) die "ghcr.io/games-on-whales/${probe_image}:${IMAGE_TAG} does not exist. Published flavours include 'edge' and 'fedora'." ;;
+  esac
+done
+if [ "$IMAGE_TAG" != edge ] && [ "$RENDER_VENDOR" = "NVIDIA" ]; then
+  msg_info "Note: on NVIDIA, non-edge app images have been seen to fall back to llvmpipe software rendering, which Wolf's encode pipeline cannot negotiate (black screen). Switch WOLF_IMAGE_TAG back to 'edge' in ${DEST}/.env if that happens."
+fi
+
 # --- Static LAN IP + the daemon's bridge spec ---
 LAN_IP="${WOLF_LAN_IP:-}"
 if [ -z "$LAN_IP" ]; then
@@ -263,6 +315,7 @@ echo "  RAM:     ${CT_RAM} MB"
 echo "  Disk:    ${CT_DISK} GB"
 echo "  Storage: ${STORAGE}"
 echo "  GPU:     ${gpu_labels[$gpu_idx]}"
+echo "  Apps:    ${IMAGE_TAG}"
 echo
 
 # ---------- 1. docker-lxc-daemon ----------
@@ -419,6 +472,7 @@ set_env WOLF_DISK_SIZE   "${CT_DISK}G"
 set_env WOLF_CPUS        "$CT_CPU"
 set_env WOLF_MEMORY      "${CT_RAM}M"
 set_env WOLF_RENDER_NODE "$RENDER_NODE"
+set_env WOLF_IMAGE_TAG   "$IMAGE_TAG"
 # Record the volume that /etc/wolf came from, so a re-run adopts exactly this
 # one rather than rediscovering it.
 [ -n "${STATE_VOLUME:-}" ] && set_env WOLF_STATE_VOLUME "$STATE_VOLUME"

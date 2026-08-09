@@ -121,10 +121,20 @@ discovery.
 On first start the bundled `startup-app.sh` seeds `/etc/wolf/config.toml` with a
 fresh host uuid and the default app profile set (`config/default-config.toml` —
 Wolf UI, desktops, Steam, RetroArch, …), pins the GOW app images to
-`WOLF_IMAGE_TAG` (default `edge` — the versioned tags such as `steam:fedora-43`
-can fall back to llvmpipe software rendering, which Wolf's NVIDIA encode
-pipeline fails to negotiate, yielding a black screen), and installs `fake-udev`. Edit `/etc/wolf/config.toml`
+`WOLF_IMAGE_TAG`, and installs `fake-udev`. Edit `/etc/wolf/config.toml`
 afterwards (or use Wolf Den) to customise apps; it is preserved across restarts.
+
+**App image build (`edge` or `fedora`):** the installer asks which build of the
+**app** images to run — `edge` (Ubuntu-based, the tested default) or `fedora`
+(Fedora-based, newer Mesa). It applies to the apps Wolf launches (Firefox, Steam,
+RetroArch, XFCE, …) and the `pulseaudio` sidecar; **Wolf and Wolf Den themselves
+come from `WOLF_IMAGE` and are unaffected**. The installer checks the tag really
+is published on ghcr before writing it, so a typo fails at install rather than as
+an app that silently won't launch. On NVIDIA, non-`edge` builds have been seen to
+fall back to llvmpipe software rendering, which Wolf's capture/encode pipeline
+cannot negotiate (black screen) — set `WOLF_IMAGE_TAG=edge` in `.env` and restart
+if you hit that. The tags are rewritten in `config.toml` on every start, so
+switching is just an edit plus a restart.
 
 **Game data / disk space:** Wolf stores its state, its client pairings and
 per-app game data (Steam libraries) under `/etc/wolf`. The installer backs that
