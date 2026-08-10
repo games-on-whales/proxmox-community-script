@@ -26,6 +26,11 @@ services:
     # discovery working (matches the production deploy).
     labels:
       gow.pve: "true"
+      # Proxmox CT id for the Wolf CT itself. The daemon otherwise takes the
+      # lowest free id it can see, and it only looks at this node — on a cluster
+      # that collides with a peer's guest and `pct create` refuses. Empty means
+      # "let the daemon allocate", which is only safe on a single node.
+      dld.vmid: "${WOLF_CTID:-}"
       gow.lan: "true"
       gow.lan.ip: "${WOLF_LAN_IP}"
       dld.storage: "${DLD_STORAGE:-local-lvm}"

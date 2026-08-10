@@ -23,6 +23,7 @@ defaulting to the first entry, auto-selected when there is only one candidate.
 
 | Prompt | Candidates / bound | Default |
 | --- | --- | --- |
+| CT id for the Wolf container | not owned by any node in the cluster (`/etc/pve/nodes/*/`) | lowest free id |
 | Storage for the Wolf CT | active `rootdir` storages, with free space (`pvesm status`) | first listed |
 | Disk size, GB (CT rootfs) | free space on the chosen storage | `100 GB` |
 | State volume size, GB (config, pairings, game data) | what is left after the rootfs | `100 GB` |
@@ -33,8 +34,8 @@ defaulting to the first entry, auto-selected when there is only one candidate.
 
 `nvidia_drm modeset=1` is probed before the GPU scan, since NVIDIA cards expose
 no render node without it. The bridge spec is derived from the LAN IP and the
-host's default route. To run unattended, preset `DLD_STORAGE`, `WOLF_LAN_IP`,
-`WOLF_DISK_SIZE`, `WOLF_STATE_SIZE`, `WOLF_CPUS`, `WOLF_MEMORY`,
+host's default route. To run unattended, preset `WOLF_CTID`, `DLD_STORAGE`,
+`WOLF_LAN_IP`, `WOLF_DISK_SIZE`, `WOLF_STATE_SIZE`, `WOLF_CPUS`, `WOLF_MEMORY`,
 `WOLF_RENDER_NODE` (and optionally `WOLF_BRIDGE`) — anything left unset takes
 its default, and a preset that isn't a real candidate, or doesn't fit the host,
 aborts the install. Every size question states its unit and accepts the unit
@@ -215,6 +216,24 @@ autoactivation so the `/etc/wolf` fstab entry has something to mount.
 
 `bash tests/state-volume-dryrun.sh` exercises this section against a faked
 storage layer.
+
+**CT id (`WOLF_CTID`):** the installer asks which Proxmox CT id the Wolf
+container should take, defaulting to the lowest id no guest owns and refusing
+one that is already in use. It checks **every node** — `/etc/pve/nodes/*/lxc`
+and `/etc/pve/nodes/*/qemu-server`, not just this node's config dir — because
+`pct create` rejects an id owned anywhere in the cluster. The daemon's own
+allocator looks only at the local node, so on a cluster it eventually picks an
+id a peer holds and the create fails with
+
+```
+manager: pct create 103 from tarball: CT 103 already exists on node 'pve1'
+```
+
+which surfaces as Wolf restarting forever, one id higher each time. Pinning the
+id via `WOLF_CTID` (passed to the daemon as the `dld.vmid` label) avoids that.
+The Wolf CT is always created on **the node you run the installer on** — the
+daemon drives `pct` locally and has no way to target another node — so run it on
+the node whose GPU you want Wolf to use.
 
 **CT sizing:** `WOLF_DISK_SIZE` sizes the Wolf CT's rootfs on `DLD_STORAGE`, and
 `WOLF_CPUS` / `WOLF_MEMORY` cap its cores and RAM. Leave the latter two unset

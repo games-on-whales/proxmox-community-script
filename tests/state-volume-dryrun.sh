@@ -72,6 +72,15 @@ STORAGE="${STORAGE:-teststore}"
 STATE_GB="${STATE_GB:-100}"
 STORAGE_TYPE="${STORAGE_TYPE:-lvmthin}"
 
+# The vmid search below uses the cluster-wide id check defined in the gather
+# section. Pull in the real function rather than a stand-in, pointed at a fake
+# cluster config tree; STATE_ID_TAKEN models a peer node already owning 9000.
+PVE="$FAKE/pve"; mkdir -p "$PVE/nodes/pve1/lxc"
+[ "${STATE_ID_TAKEN:-0}" = 1 ] && : > "$PVE/nodes/pve1/lxc/9000.conf"
+sed -n '/^ct_id_used()/,/^}/p' install.sh | sed -e "s#/etc/pve/#$PVE/#g" > "$FAKE/ct_id_used.sh"
+# shellcheck disable=SC1090
+source "$FAKE/ct_id_used.sh"
+
 # Section 2b only, with /etc/wolf and /etc/fstab redirected into the scratch dir.
 sed -n '/---------- 2b\. the Wolf state volume/,/^# ---------- 3\./p' install.sh |
   sed -e '/^# ---------- 3\./d' \
@@ -128,6 +137,11 @@ reject "never formats a missing device"    "MKFS-RAN"                           
 out=$(run_state lvmthin)
 expect "owns the volume with a real vmid"  "ALLOC-VMID=9000"                       "$out"
 reject "never allocates against vmid 0"    "ALLOC-VMID=0 "                         "$out"
+
+# That id is checked across the whole cluster, not just this node — an id a peer
+# owns is skipped, the same way the Wolf CT id is.
+out=$(run_state lvmthin STATE_ID_TAKEN=1)
+expect "skips an id a peer node owns"      "ALLOC-VMID=9001"                       "$out"
 
 # Block vs file storages get the naming pvesm expects.
 out=$(run_state dir)

@@ -9,8 +9,8 @@
 # UI). Wolf streams virtual desktops and applications to Moonlight clients; each
 # session runs as a sibling Proxmox CT through the daemon.
 #
-# Non-interactive: preset DLD_STORAGE, WOLF_LAN_IP (CIDR), WOLF_DISK_SIZE,
-# WOLF_CPUS, WOLF_MEMORY, WOLF_RENDER_NODE and optionally WOLF_BRIDGE
+# Non-interactive: preset WOLF_CTID, DLD_STORAGE, WOLF_LAN_IP (CIDR),
+# WOLF_DISK_SIZE, WOLF_CPUS, WOLF_MEMORY, WOLF_RENDER_NODE and optionally WOLF_BRIDGE
 # ("name=prefix/subnet:gateway") in the environment. Anything left unset is
 # prompted for on a terminal, or takes its default when there is no terminal.
 #
@@ -102,6 +102,57 @@ command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y cu
 
 # ---------- 0. gather settings ----------
 # Ask everything up front so the rest of the install runs unattended.
+
+# --- CT id for the Wolf container ---
+# Proxmox refuses to create onto an id any node in the cluster already owns, but
+# the daemon's own allocator only scans this node's config dir
+# (LXC2Docker internal/lxc/manager.go, usedVMIDs). On a cluster it therefore
+# hands out ids a peer holds and `pct create` fails with
+#
+#   manager: pct create 103 from tarball: CT 103 already exists on node 'pve1'
+#
+# which reaches the user as a Wolf container that restarts forever, climbing one
+# id per attempt. Pin the id here instead, checked against every node.
+ct_id_used() { # ct_id_used <id> — is this id taken by any guest in the cluster?
+  local id="$1" conf
+  # A glob that matches nothing stays literal, and -e then fails — which is the
+  # answer we want for a single-node host with no /etc/pve/nodes tree.
+  for conf in /etc/pve/nodes/*/lxc/"${id}.conf" /etc/pve/nodes/*/qemu-server/"${id}.conf" \
+              /etc/pve/lxc/"${id}.conf" /etc/pve/qemu-server/"${id}.conf"; do
+    [ -e "$conf" ] && return 0
+  done
+  return 1
+}
+
+# Proxmox' own id range. 100 is where `pvesh get /cluster/nextid` starts.
+CT_ID_MIN=100; CT_ID_MAX=999999999
+
+CT_ID="${WOLF_CTID:-}"
+if [ -n "$CT_ID" ]; then
+  [[ "$CT_ID" =~ ^[0-9]+$ ]] && [ "$CT_ID" -ge "$CT_ID_MIN" ] && [ "$CT_ID" -le "$CT_ID_MAX" ] ||
+    die "WOLF_CTID=${CT_ID} is not a Proxmox CT id (${CT_ID_MIN}-${CT_ID_MAX})."
+  ! ct_id_used "$CT_ID" ||
+    die "WOLF_CTID=${CT_ID} is already in use by a guest in this cluster."
+  msg_info "Wolf CT id: ${CT_ID}"
+else
+  default_ct_id="$CT_ID_MIN"
+  while ct_id_used "$default_ct_id"; do
+    default_ct_id=$((default_ct_id + 1))
+    [ "$default_ct_id" -le "$CT_ID_MAX" ] || die "No free Proxmox CT id in the cluster."
+  done
+  while true; do
+    if [ -t 0 ]; then read -rp " CT id for the Wolf container [${default_ct_id}]: " CT_ID; else CT_ID=""; fi
+    CT_ID="${CT_ID:-$default_ct_id}"
+    if ! [[ "$CT_ID" =~ ^[0-9]+$ ]] || [ "$CT_ID" -lt "$CT_ID_MIN" ] || [ "$CT_ID" -gt "$CT_ID_MAX" ]; then
+      echo "Invalid id. Enter a number between ${CT_ID_MIN} and ${CT_ID_MAX}."
+    elif ct_id_used "$CT_ID"; then
+      echo "CT/VM ${CT_ID} already exists in this cluster. Pick a free id."
+    else
+      break
+    fi
+    [ -t 0 ] || die "No terminal to re-ask on — set WOLF_CTID to a free id and re-run."
+  done
+fi
 
 # --- Proxmox storage for the Wolf CT and every session CT ---
 # Candidates are the active rootdir storages, labelled "name (type, N GB free)".
@@ -320,6 +371,7 @@ if [ -z "$BRIDGE_SPEC" ]; then
 fi
 
 msg_info "Wolf on Proxmox setup"
+echo "  CT id:   ${CT_ID}"
 echo "  IP:      ${LAN_IP}"
 echo "  Bridge:  ${BRIDGE_SPEC}"
 echo "  CPU:     ${CT_CPU} cores"
@@ -466,8 +518,7 @@ else
     state_vmid="${WOLF_STATE_VMID:-}"
     if [ -z "$state_vmid" ]; then
       state_vmid=9000
-      while [ -e "/etc/pve/qemu-server/${state_vmid}.conf" ] ||
-            [ -e "/etc/pve/lxc/${state_vmid}.conf" ]; do
+      while ct_id_used "$state_vmid"; do
         state_vmid=$((state_vmid + 1))
         [ "$state_vmid" -le 9999 ] || die "No free VM ID in 9000-9999 for the Wolf state volume."
       done
@@ -565,6 +616,7 @@ set_env() { # set_env KEY VALUE — replace the key, or append it if absent
     echo "${key}=${value}" >> "$file"
   fi
 }
+set_env WOLF_CTID        "$CT_ID"
 set_env WOLF_LAN_IP      "$LAN_IP"
 set_env DLD_STORAGE      "$STORAGE"
 set_env WOLF_DISK_SIZE   "${CT_DISK}G"
