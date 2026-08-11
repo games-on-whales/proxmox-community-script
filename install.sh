@@ -309,7 +309,7 @@ else
   image_tags=(edge fedora)
   image_labels=(
     "edge — Ubuntu-based, the tested default"
-    "fedora — Fedora-based (newer Mesa; see the NVIDIA note below)"
+    "fedora — Fedora-based (newer Mesa; if you use NVIDIA GPU, please note that non-edge images falls back to software rendering which is unsupported by wolf which will cause black screen, change Switch WOLF_IMAGE_TAG to 'edge' in /opt/wolf-proxmox/.env if that happens)"
   )
   prompt_choice "Which build of the GOW app images should Wolf run" "${image_labels[@]}"
   IMAGE_TAG="${image_tags[$CHOICE_IDX]}"
