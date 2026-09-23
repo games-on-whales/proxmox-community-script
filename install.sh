@@ -625,6 +625,8 @@ msg_info "Fetching the Wolf recipe into ${DEST}"
 mkdir -p "$DEST"
 curl -fsSL "${REPO_RAW}/docker-compose.yml"        -o "${DEST}/docker-compose.yml"
 curl -fsSL "${REPO_RAW}/docker-compose.nvidia.yml" -o "${DEST}/docker-compose.nvidia.yml"
+curl -fsSL "${REPO_RAW}/wolf-den-launch.sh" -o "${DEST}/wolf-den-launch.sh"
+chmod 0755 "${DEST}/wolf-den-launch.sh"
 [ -f "${DEST}/.env" ] || curl -fsSL "${REPO_RAW}/.env.example" -o "${DEST}/.env"
 
 set_env() { # set_env KEY VALUE — replace the key, or append it if absent
@@ -634,6 +636,10 @@ set_env() { # set_env KEY VALUE — replace the key, or append it if absent
   else
     echo "${key}=${value}" >> "$file"
   fi
+  # Compose gives the process environment precedence over .env. Presets such
+  # as WOLF_MEMORY=16384 are installer MB values, not Docker byte counts.
+  # Export the normalized value too, or unattended installs lose their units.
+  export "${key}=${value}"
 }
 set_env WOLF_CTID        "$CT_ID"
 set_env WOLF_LAN_IP      "$LAN_IP"

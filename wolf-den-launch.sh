@@ -16,7 +16,9 @@ if [ ! -S "${SOCK}" ]; then
 fi
 
 mkdir -p /run/wolf-den
-socat "UNIX-LISTEN:/run/wolf-den/wolf.sock,mode=666,reuseaddr,fork" \
+# /run may live on the CT rootfs and retain the old socket across a restart.
+# SO_REUSEADDR does not remove a stale Unix socket pathname.
+socat "UNIX-LISTEN:/run/wolf-den/wolf.sock,mode=666,unlink-early,fork" \
       "UNIX-CONNECT:${SOCK}" 2>/dev/null &
 
 export WOLF_SOCKET_PATH="unix:///run/wolf-den/wolf.sock"
