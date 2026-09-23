@@ -59,6 +59,7 @@ services:
       WOLF_STOP_CONTAINER_ON_EXIT: "${WOLF_STOP_CONTAINER_ON_EXIT:-TRUE}"
 
     volumes:
+      - ./wolf-den-launch.sh:/opt/wolf-den/launch.sh:ro
       - /etc/wolf:/etc/wolf
       - /var/run/docker.sock:/var/run/docker.sock
       - /run/udev:/run/udev:ro
