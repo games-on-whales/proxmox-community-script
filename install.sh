@@ -28,6 +28,7 @@ trap 'msg_err "install failed (line $LINENO): $BASH_COMMAND"' ERR
 
 REPO_RAW="https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/main"
 DAEMON_REPO="games-on-whales/LXC2Docker"
+DAEMON_MIN_VERSION="0.1.3" # cluster-wide allocation + dld.vmid, including cold templates
 DEST="${WOLF_DEST:-/opt/wolf-proxmox}"
 
 # ---------- prompt helpers ----------
@@ -105,14 +106,15 @@ command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y cu
 
 # --- CT id for the Wolf container ---
 # Proxmox refuses to create onto an id any node in the cluster already owns, but
-# the daemon's own allocator only scans this node's config dir
-# (LXC2Docker internal/lxc/manager.go, usedVMIDs). On a cluster it therefore
+# older daemon releases scanned only this node's config dir
+# (LXC2Docker internal/lxc/manager.go, usedVMIDs). On a cluster they therefore
 # hands out ids a peer holds and `pct create` fails with
 #
 #   manager: pct create 103 from tarball: CT 103 already exists on node 'pve1'
 #
 # which reaches the user as a Wolf container that restarts forever, climbing one
-# id per attempt. Pin the id here instead, checked against every node.
+# id per attempt. Require a fixed daemon below, and pin the Wolf id here,
+# checked against every node. Session and template ids remain daemon-allocated.
 ct_id_used() { # ct_id_used <id> — is this id taken by any guest in the cluster?
   local id="$1" conf
   # A glob that matches nothing stays literal, and -e then fails — which is the
@@ -302,6 +304,9 @@ RENDER_NODE="${GPU_RENDER_NODES[$gpu_idx]}"; RENDER_VENDOR="${GPU_VENDORS[$gpu_i
 # WOLF_IMAGE_TAG pins every app image (firefox, steam, retroarch, …) and the
 # pulseaudio sidecar; startup-app.sh rewrites config.toml to it on each start.
 # Both flavours are published for every app image this recipe seeds.
+if [ "$RENDER_VENDOR" = "NVIDIA" ]; then
+  msg_info "On NVIDIA, non-edge app images can fall back to llvmpipe software rendering, causing a black screen in Wolf. Choose 'edge' for the tested default; WOLF_IMAGE_TAG in ${DEST}/.env can be changed later."
+fi
 IMAGE_TAG="${WOLF_IMAGE_TAG:-}"
 if [ -n "$IMAGE_TAG" ]; then
   msg_info "App images: ${IMAGE_TAG}"
@@ -309,7 +314,7 @@ else
   image_tags=(edge fedora)
   image_labels=(
     "edge — Ubuntu-based, the tested default"
-    "fedora — Fedora-based (newer Mesa; see the NVIDIA note below)"
+    "fedora — Fedora-based (newer Mesa)"
   )
   prompt_choice "Which build of the GOW app images should Wolf run" "${image_labels[@]}"
   IMAGE_TAG="${image_tags[$CHOICE_IDX]}"
@@ -346,9 +351,7 @@ for probe_image in steam pulseaudio; do
     *) die "ghcr.io/games-on-whales/${probe_image}:${IMAGE_TAG} does not exist. Published flavours include 'edge' and 'fedora'." ;;
   esac
 done
-if [ "$IMAGE_TAG" != edge ] && [ "$RENDER_VENDOR" = "NVIDIA" ]; then
-  msg_info "Note: on NVIDIA, non-edge app images have been seen to fall back to llvmpipe software rendering, which Wolf's encode pipeline cannot negotiate (black screen). Switch WOLF_IMAGE_TAG back to 'edge' in ${DEST}/.env if that happens."
-fi
+
 
 # --- Static LAN IP + the daemon's bridge spec ---
 LAN_IP="${WOLF_LAN_IP:-}"
@@ -384,21 +387,35 @@ echo "  Apps:    ${IMAGE_TAG}"
 echo
 
 # ---------- 1. docker-lxc-daemon ----------
-if command -v docker-lxc-daemon >/dev/null 2>&1; then
-  msg_ok "docker-lxc-daemon already installed"
-else
-  msg_info "Installing the latest docker-lxc-daemon"
-  # `set -o pipefail` makes this whole pipeline fail when the release carries no
-  # matching asset (grep exits 1) or when head closes the pipe early (SIGPIPE),
-  # and a bare assignment adopts that status -- which would abort here, before
-  # the check below ever runs. Let the empty result reach its own error message.
-  deb_url=$(curl -fsSL "https://api.github.com/repos/${DAEMON_REPO}/releases/latest" \
-    | grep -oE 'https://[^"]+_amd64\.deb' | head -1) || deb_url=""
+ensure_daemon() (
+  # A PATH check alone kept v0.1.2 forever: it ignores dld.vmid and only scans
+  # this node. Both new installs and upgrades must use the fixed package.
+  local installed_version deb_url tmp package_version
+  installed_version=$(dpkg-query -W -f='${Status} ${Version}' docker-lxc-daemon 2>/dev/null |
+    awk '$1 == "install" && $2 == "ok" && $3 == "installed" {print $4}') || installed_version=""
+  if [ -x /usr/bin/docker-lxc-daemon ] && [ -n "$installed_version" ] &&
+      dpkg --compare-versions "$installed_version" ge "$DAEMON_MIN_VERSION"; then
+    msg_ok "docker-lxc-daemon ${installed_version} already installed"
+    return
+  fi
+
+  msg_info "Installing docker-lxc-daemon >= ${DAEMON_MIN_VERSION} (cluster-safe CT ids)"
+  # Only inspect download URLs. A failed request or missing asset must reach
+  # our error message even with pipefail enabled.
+  deb_url=$(curl -fsSL "https://api.github.com/repos/${DAEMON_REPO}/releases/latest" |
+    grep -oE '"browser_download_url":[[:space:]]*"[^"]+_amd64\.deb"' |
+    head -1 | cut -d'"' -f4) || deb_url=""
   [ -n "$deb_url" ] || die "No .deb found in ${DAEMON_REPO} releases."
-  tmp=$(mktemp --suffix=.deb); curl -fsSL "$deb_url" -o "$tmp"
-  apt-get install -y "$tmp"; rm -f "$tmp"
-  msg_ok "docker-lxc-daemon installed"
-fi
+  tmp=$(mktemp --suffix=.deb)
+  trap 'rm -f "$tmp"' EXIT
+  curl -fsSL "$deb_url" -o "$tmp"
+  package_version=$(dpkg-deb -f "$tmp" Version)
+  dpkg --compare-versions "$package_version" ge "$DAEMON_MIN_VERSION" ||
+    die "docker-lxc-daemon ${package_version} lacks the required CT-id fixes; install ${DAEMON_MIN_VERSION} or newer from https://github.com/${DAEMON_REPO}/releases and re-run."
+  apt-get install -y "$tmp"
+  msg_ok "docker-lxc-daemon ${package_version} installed"
+)
+ensure_daemon
 
 msg_info "Configuring docker-lxc-daemon (storage=${STORAGE}, bridge=${BRIDGE_SPEC})"
 mkdir -p /etc/systemd/system/docker-lxc-daemon.service.d
@@ -408,7 +425,9 @@ ExecStart=
 ExecStart=/usr/bin/docker-lxc-daemon --pve-storage=${STORAGE} --bridge=${BRIDGE_SPEC}
 EOF
 systemctl daemon-reload
-systemctl enable --now docker-lxc-daemon
+# enable --now leaves an already-running daemon on its old executable/settings.
+systemctl enable docker-lxc-daemon
+systemctl restart docker-lxc-daemon
 msg_ok "docker-lxc-daemon running"
 
 # ---------- 2. host prerequisites ----------
