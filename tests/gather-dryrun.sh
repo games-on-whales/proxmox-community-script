@@ -139,6 +139,24 @@ expect "GPUs are listed as 'vendor name (driver, node)'" \
 expect "defaults without a terminal" \
   "RESULT ctid=103 storage=local-lvm disk=9 state=1 cpu=4 ram=4096 gpu=/dev/dri/renderD128 vendor=NVIDIA apps=edge" "$out"
 
+# The GPU warning must reach NVIDIA users before they choose an app image.
+warning_line=$(printf '%s\n' "$out" | awk '/On NVIDIA, non-edge/ {print NR; exit}')
+choice_line=$(printf '%s\n' "$out" | awk '/1\) edge/ {print NR; exit}')
+if [ -n "$warning_line" ] && [ -n "$choice_line" ] && [ "$warning_line" -lt "$choice_line" ]; then
+  ok "NVIDIA warning appears before image selection"
+else
+  bad "NVIDIA warning appears before image selection" "warning before the edge/fedora list"
+fi
+
+out=$(run_gather notty '' WOLF_RENDER_NODE=/dev/dri/renderD129 WOLF_LAN_IP=192.168.1.50/24)
+case "$out" in
+  *"On NVIDIA, non-edge"*) bad "AMD selection has no NVIDIA warning" "no warning" ;;
+  *) ok "AMD selection has no NVIDIA warning" ;;
+esac
+
+out=$(run_gather notty '' WOLF_IMAGE_TAG=fedora WOLF_LAN_IP=192.168.1.50/24)
+expect "preset NVIDIA image tags still receive the warning" "On NVIDIA, non-edge" "$out"
+
 # Presets that cannot work abort rather than silently installing something else.
 out=$(run_gather notty '' DLD_STORAGE=local-lvm WOLF_DISK_SIZE=500G WOLF_LAN_IP=192.168.1.50/24)
 expect "disk larger than free space is rejected" "does not fit the 9 GB free on local-lvm" "$out"

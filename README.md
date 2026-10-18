@@ -45,6 +45,24 @@ the equivalent, broken out.
 
 `bash tests/gather-dryrun.sh` exercises this section against a faked host.
 
+## Cluster CT ids and daemon upgrades
+
+The installer requires `docker-lxc-daemon >= 0.1.3`, installs or upgrades the
+package when needed, and restarts the service to load the new binary and settings.
+Release `0.1.2` ignores `dld.vmid` and checks only the local node's guest ids:
+choosing `WOLF_CTID=200` cannot prevent it from trying a peer's CT id instead.
+The fixed daemon checks CT and VM ids across every node, honours Wolf's pinned
+id, and keeps image-template allocation from taking that id during a cold start.
+
+`WOLF_CTID` controls Wolf itself. Session and image-template CTs take other free
+cluster-wide ids; it does **not** set an allocation floor or reserve a range.
+Proxmox still arbitrates simultaneous creates from other nodes, so a selected id
+can become occupied between the check and creation. No CT-id range is reserved
+by this installer.
+
+`bash tests/daemon-dryrun.sh` checks fresh installs, upgrades, version rejection,
+and daemon restarts against a faked host.
+
 ## Uninstall
 
 ```sh
@@ -100,7 +118,7 @@ The Compose file reproduces the SmoothNAS `wolf-runtime` + `gpu-*` profiles:
 
 ## Prerequisites
 
-1. **docker-lxc-daemon on the PVE host**:
+1. **docker-lxc-daemon >= 0.1.3 on the PVE host**:
    ```sh
    bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/LXC2Docker/main/scripts/install-on-pve.sh)"
    systemctl enable --now docker-lxc-daemon
