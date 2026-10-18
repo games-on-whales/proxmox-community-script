@@ -2,7 +2,7 @@
 #
 # Wolf on Proxmox (LXC2Docker) — uninstaller.
 #
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/main/uninstall.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/beta/uninstall.sh)"
 #
 # Reverses install.sh: takes the Wolf CT and any session CTs down, removes
 # docker-lxc-daemon and the host prerequisites, and unmounts /etc/wolf.

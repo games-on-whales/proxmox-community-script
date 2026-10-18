@@ -12,12 +12,12 @@ management UI bundled on `:8080`.
 Run on your Proxmox VE node:
 
 ```sh
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/main/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/beta/install.sh)"
 ```
 
 It installs `docker-lxc-daemon`, the virtual-input/runtime prerequisites, and
 Wolf. Everything is asked up front — the same selection model as the Wolf
-[quickstart scripts](https://github.com/games-on-whales/wolf/tree/main/quickstart)
+[quickstart scripts](https://github.com/games-on-whales/wolf/tree/beta/quickstart)
 this installer descends from: a numbered list of what the host actually has,
 defaulting to the first entry, auto-selected when there is only one candidate.
 
@@ -66,7 +66,7 @@ and daemon restarts against a faked host.
 ## Uninstall
 
 ```sh
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/main/uninstall.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/beta/uninstall.sh)"
 ```
 
 Removes the Wolf CT and any session CTs, `docker-lxc-daemon`, the host
@@ -120,7 +120,7 @@ The Compose file reproduces the SmoothNAS `wolf-runtime` + `gpu-*` profiles:
 
 1. **docker-lxc-daemon >= 0.1.3 on the PVE host**:
    ```sh
-   bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/LXC2Docker/main/scripts/install-on-pve.sh)"
+   bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/LXC2Docker/beta/scripts/install-on-pve.sh)"
    systemctl enable --now docker-lxc-daemon
    ```
    Configure its `--lan-*` bridge so CTs can take a static LAN IP.
@@ -280,3 +280,10 @@ Menus (Wolf UI, Big Picture) are unaffected — they read the pad over evdev.
 Verified on a live Proxmox VE host (RTX 5080): Wolf + Wolf Den, sibling session
 CTs, controllers, and hardware NVENC all working. Mirrors the production
 SmoothNAS Wolf plugin.
+
+
+## App image default
+
+New installations use the Fedora 44 GoW images (`WOLF_IMAGE_TAG=fedora-44`),
+including on NVIDIA. The second image choice is Ubuntu (`edge`), offered as a
+compatibility backup. Existing explicit image-tag overrides remain supported.

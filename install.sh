@@ -2,7 +2,7 @@
 #
 # Wolf on Proxmox (LXC2Docker) — one-line host installer.
 #
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/main/install.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/beta/install.sh)"
 #
 # Installs docker-lxc-daemon on the Proxmox VE host, sets up the virtual-input
 # and runtime prerequisites, and brings up Games-on-Whales Wolf (+ the Wolf Den
@@ -304,17 +304,15 @@ RENDER_NODE="${GPU_RENDER_NODES[$gpu_idx]}"; RENDER_VENDOR="${GPU_VENDORS[$gpu_i
 # WOLF_IMAGE_TAG pins every app image (firefox, steam, retroarch, …) and the
 # pulseaudio sidecar; startup-app.sh rewrites config.toml to it on each start.
 # Both flavours are published for every app image this recipe seeds.
-if [ "$RENDER_VENDOR" = "NVIDIA" ]; then
-  msg_info "On NVIDIA, non-edge app images can fall back to llvmpipe software rendering, causing a black screen in Wolf. Choose 'edge' for the tested default; WOLF_IMAGE_TAG in ${DEST}/.env can be changed later."
-fi
+msg_info "Fedora 44 is the default. Ubuntu is a backup if your GPU or application needs it."
 IMAGE_TAG="${WOLF_IMAGE_TAG:-}"
 if [ -n "$IMAGE_TAG" ]; then
   msg_info "App images: ${IMAGE_TAG}"
 else
-  image_tags=(edge fedora)
+  image_tags=(fedora-44 edge)
   image_labels=(
-    "edge — Ubuntu-based, the tested default"
-    "fedora — Fedora-based (newer Mesa)"
+    "Fedora 44 — default GoW app images"
+    "Ubuntu — backup for compatibility"
   )
   prompt_choice "Which build of the GOW app images should Wolf run" "${image_labels[@]}"
   IMAGE_TAG="${image_tags[$CHOICE_IDX]}"
@@ -348,7 +346,7 @@ for probe_image in steam pulseaudio; do
   case "$probe_rc" in
     0) : ;;
     2) msg_info "Could not reach ghcr.io to confirm ${probe_image}:${IMAGE_TAG} — continuing." ;;
-    *) die "ghcr.io/games-on-whales/${probe_image}:${IMAGE_TAG} does not exist. Published flavours include 'edge' and 'fedora'." ;;
+    *) die "ghcr.io/games-on-whales/${probe_image}:${IMAGE_TAG} does not exist. Supported choices are 'fedora-44' (default) and 'edge' (Ubuntu backup)." ;;
   esac
 done
 

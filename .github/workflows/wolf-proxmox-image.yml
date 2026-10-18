@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag to publish (e.g. latest, 2026.07)"
+        description: "Image tag to publish (e.g. beta, stable, v2026.10)"
         required: true
-        default: latest
+        default: beta
       wolf_base:
         description: "Upstream Wolf base image"
         required: true

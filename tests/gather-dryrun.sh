@@ -137,25 +137,15 @@ expect "GPUs are listed as 'vendor name (driver, node)'" \
 # The disk default eats the nearly-full local-lvm, so the state volume is
 # clamped to the 1 GB floor rather than going negative.
 expect "defaults without a terminal" \
-  "RESULT ctid=103 storage=local-lvm disk=9 state=1 cpu=4 ram=4096 gpu=/dev/dri/renderD128 vendor=NVIDIA apps=edge" "$out"
+  "RESULT ctid=103 storage=local-lvm disk=9 state=1 cpu=4 ram=4096 gpu=/dev/dri/renderD128 vendor=NVIDIA apps=fedora-44" "$out"
 
-# The GPU warning must reach NVIDIA users before they choose an app image.
-warning_line=$(printf '%s\n' "$out" | awk '/On NVIDIA, non-edge/ {print NR; exit}')
-choice_line=$(printf '%s\n' "$out" | awk '/1\) edge/ {print NR; exit}')
-if [ -n "$warning_line" ] && [ -n "$choice_line" ] && [ "$warning_line" -lt "$choice_line" ]; then
-  ok "NVIDIA warning appears before image selection"
-else
-  bad "NVIDIA warning appears before image selection" "warning before the edge/fedora list"
-fi
-
-out=$(run_gather notty '' WOLF_RENDER_NODE=/dev/dri/renderD129 WOLF_LAN_IP=192.168.1.50/24)
+# Fedora 44 is primary for every GPU; Ubuntu is the explicit second choice.
+expect "Fedora 44 is offered first" "1) Fedora 44 — default GoW app images" "$out"
+expect "Ubuntu is offered only as backup" "2) Ubuntu — backup for compatibility" "$out"
 case "$out" in
-  *"On NVIDIA, non-edge"*) bad "AMD selection has no NVIDIA warning" "no warning" ;;
-  *) ok "AMD selection has no NVIDIA warning" ;;
+  *"On NVIDIA, non-edge"*) bad "NVIDIA does not silently select Ubuntu" "Fedora default" ;;
+  *) ok "NVIDIA does not silently select Ubuntu" ;;
 esac
-
-out=$(run_gather notty '' WOLF_IMAGE_TAG=fedora WOLF_LAN_IP=192.168.1.50/24)
-expect "preset NVIDIA image tags still receive the warning" "On NVIDIA, non-edge" "$out"
 
 # Presets that cannot work abort rather than silently installing something else.
 out=$(run_gather notty '' DLD_STORAGE=local-lvm WOLF_DISK_SIZE=500G WOLF_LAN_IP=192.168.1.50/24)
@@ -182,7 +172,7 @@ expect "unknown storage is rejected" "Storage nope not found" "$out"
 # ct id, storage, disk, state volume, cpu, ram, gpu, app images, ip
 out=$(run_gather tty '250\n2\n200\n300\n4\n16384\n2\n1\n192.168.1.77/24\n')
 expect "interactive answers are used" \
-  "RESULT ctid=250 storage=stores disk=200 state=300 cpu=4 ram=16384 gpu=/dev/dri/renderD129 vendor=AMD apps=edge" "$out"
+  "RESULT ctid=250 storage=stores disk=200 state=300 cpu=4 ram=16384 gpu=/dev/dri/renderD129 vendor=AMD apps=fedora-44" "$out"
 
 # An empty answer takes the offered default — the lowest free id in the cluster.
 out=$(run_gather tty '\n2\n200\n300\n4\n16384\n2\n1\n192.168.1.77/24\n')
@@ -198,13 +188,13 @@ expect "the re-asked id is used" "RESULT ctid=250 " "$out"
 out=$(run_gather tty '250\n9\n2\n999999\n50\n999999\n100\n99\n4\n999999\n8192\n9\n1\n2\n192.168.1.77/24\n')
 expect "out-of-range answers re-ask" "Invalid selection. Enter a number between 1 and 2." "$out"
 expect "out-of-range values re-ask" \
-  "RESULT ctid=250 storage=stores disk=50 state=100 cpu=4 ram=8192 gpu=/dev/dri/renderD128 vendor=NVIDIA apps=fedora" "$out"
+  "RESULT ctid=250 storage=stores disk=50 state=100 cpu=4 ram=8192 gpu=/dev/dri/renderD128 vendor=NVIDIA apps=edge" "$out"
 
 # App image flavour: both builds are offered, and the tag is checked against the
 # registry so a tag Wolf could never pull fails here, not at first app launch.
 out=$(run_gather notty '' WOLF_LAN_IP=192.168.1.50/24)
-expect "offers the fedora build"     "fedora — Fedora-based"                  "$out"
-expect "offers the edge build"       "edge — Ubuntu-based"                    "$out"
+expect "offers the fedora build"     "Fedora 44 — default"                  "$out"
+expect "offers the edge build"       "Ubuntu — backup"                    "$out"
 
 out=$(run_gather notty '' WOLF_IMAGE_TAG=nope-xyz TAG_EXISTS=0 WOLF_LAN_IP=192.168.1.50/24)
 expect "a tag ghcr does not publish is rejected" \
