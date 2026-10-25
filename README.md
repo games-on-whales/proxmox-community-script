@@ -184,10 +184,21 @@ discovery.
 
 ## Publishing the image
 
-`docker compose build` builds locally. To publish a shared
-`ghcr.io/games-on-whales/wolf-proxmox` image, run the
-`.github/workflows/wolf-proxmox-image.yml` workflow (manual dispatch), then set
-`WOLF_IMAGE` to the pinned tag/digest.
+`ghcr.io/games-on-whales/wolf-proxmox:latest` is built by
+`.github/workflows/wolf-proxmox-image.yml`. Wolf fixes reach Proxmox only through
+a rebuild, so the workflow runs on its own: daily when `wolf:stable` or
+`wolf-den:stable` has a new digest, and on every push to `main` that changes the
+image's files. The upstream digests it was built from are recorded as image
+labels:
+
+```sh
+docker inspect --format '{{json .Config.Labels}}' ghcr.io/games-on-whales/wolf-proxmox:latest
+```
+
+Run the workflow manually to publish another tag or base (for example
+`wolf_base=ghcr.io/games-on-whales/wolf:vulkan`). `docker compose build` builds
+the image locally instead. Set `WOLF_IMAGE` to a pinned tag or digest to stop
+following `latest`.
 
 ## Configuration
 

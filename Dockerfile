@@ -2,7 +2,7 @@
 # UI on :8080, mirroring the SmoothNAS plugin image. Wolf itself already carries
 # the server, config bootstrap, and entrypoint, so this image stays thin.
 #
-#   docker compose build   (or the workflow_dispatch build in .github/workflows)
+#   docker compose build   (CI: .github/workflows/wolf-proxmox-image.yml)
 
 ARG WOLF_BASE=ghcr.io/games-on-whales/wolf:stable
 ARG WOLF_DEN_IMAGE=ghcr.io/games-on-whales/wolf-den:stable
