@@ -34,22 +34,38 @@ echo "APT \$1"
 exit 0
 EOF
 
-  # The generator writes the spec that install.sh then inspects. It announces
-  # itself on stderr because install.sh sends the generator's stdout to
-  # /dev/null — asserting on stdout here would silently observe nothing.
+  # The generator writes the spec the helper then inspects. It announces itself
+  # on stderr because the helper sends the generator's stdout to /dev/null —
+  # asserting on stdout here would silently observe nothing.
   cat > "$bin/nvidia-ctk.real" <<EOF
 #!/usr/bin/env bash
 echo "NVIDIA-CTK \$*" >&2
 [ "\${GEN_FAILS:-0}" = 1 ] && exit 1
+out=\$(printf '%s\n' "\$@" | sed -n 's/^--output=//p')
 if [ "\${SPEC_EMPTY:-0}" = 1 ]; then
-  echo '{"cdiVersion":"0.5.0","devices":[]}' > "$fake/etc-cdi/nvidia.json"
+  echo '{"cdiVersion":"0.5.0","devices":[]}' > "\$out"
 else
-  echo '{"cdiVersion":"0.5.0","containerEdits":{"deviceNodes":[{"path":"/dev/nvidiactl"}]}}' > "$fake/etc-cdi/nvidia.json"
+  echo '{"cdiVersion":"0.5.0","containerEdits":{"deviceNodes":[{"path":"/dev/nvidiactl"}]}}' > "\$out"
 fi
 exit 0
 EOF
+  printf '#!/usr/bin/env bash\necho 580.1.2\n' > "$bin/nvidia-smi"
+  # The installer silences systemctl, so the stub keeps its own log.
+  printf '#!/usr/bin/env bash\necho "SYSTEMCTL $*" >> %s/systemctl.log\n' "$fake" > "$bin/systemctl"
 
-  printf '#!/usr/bin/env bash\necho "gpgkey-or-list-content"\n' > "$bin/curl"
+  # The installer fetches the CDI helper and its unit from REPO_RAW: serve this
+  # checkout's copies, so the helper under test is the one in the repo.
+  cat > "$bin/curl" <<EOF
+#!/usr/bin/env bash
+out=""; url=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in -o) out="\$2"; shift ;; -*) ;; *) url="\$1" ;; esac; shift
+done
+src="$PWD/\${url##*/}"
+if [ -z "\$out" ]; then echo "gpgkey-or-list-content"
+elif [ -f "\$src" ]; then cp "\$src" "\$out"
+else echo "gpgkey-or-list-content" > "\$out"; fi
+EOF
   printf '#!/usr/bin/env bash\ncat >/dev/null\necho "GPG $*"\n'  > "$bin/gpg"
   chmod +x "$bin"/*
   # CTK_PRESENT models a host that already carries the toolkit, so the stub has
@@ -64,6 +80,7 @@ msg_info() { echo " > $*"; }
 msg_ok()   { echo " ok $*"; }
 msg_err()  { echo " ERR $*" >&2; }
 die()      { msg_err "$*"; exit 1; }
+REPO_RAW=https://example.invalid/repo
 HARNESS
 
   # The function under test, lifted verbatim from install.sh — anchored on its
@@ -73,11 +90,21 @@ HARNESS
   sed -n '/^ensure_nvidia_cdi() {$/,/^}$/p' install.sh \
     | sed -e "s#/etc/cdi#$fake/etc-cdi#g" \
           -e "s#/usr/share/keyrings#$fake/keyrings#g" \
-          -e "s#/etc/apt/sources.list.d#$fake/apt-sources#g" >> "$script"
+          -e "s#/etc/apt/sources.list.d#$fake/apt-sources#g" \
+          -e "s#/usr/local/sbin#$fake/sbin#g" \
+          -e "s#/etc/systemd/system#$fake/units#g" \
+          -e "s#/etc/default#$fake/default#g" >> "$script"
   echo 'ensure_nvidia_cdi' >> "$script"
-  mkdir -p "$fake/apt-sources"
+  echo "cat $fake/systemctl.log 2>/dev/null || true" >> "$script"
+  echo "echo \"DEFAULTS \$(tr '\n' ' ' < $fake/default/wolf-nvidia-cdi)\"" >> "$script"
+  mkdir -p "$fake/apt-sources" "$fake/sbin" "$fake/units" "$fake/default"
+  # PRESET_LIB32 models an earlier install's choice.
+  case " $* " in *" PRESET_LIB32=0 "*) echo WOLF_NVIDIA_LIB32=0 > "$fake/default/wolf-nvidia-cdi" ;; esac
 
-  env "$@" PATH="$bin:$PATH" bash "$script" 2>&1 || true
+  # The 32-bit libraries have their own test (nvidia-lib32-dryrun.sh); these
+  # cases are about the toolkit and the spec.
+  env WOLF_NVIDIA_LIB32=0 "$@" WOLF_CDI_SPEC="$fake/etc-cdi/nvidia.json" \
+    WOLF_LIB32_ROOT="$fake/lib32" PATH="$bin:$PATH" bash "$script" 2>&1 || true
   rm -rf "$fake"
 }
 
@@ -91,6 +118,19 @@ out=$(run_cdi HAVE_CTK=0)
 expect "missing toolkit is installed"   "APT install"                      "$out"
 expect "the CDI spec is generated"      "NVIDIA-CTK cdi generate"          "$out"
 expect "success is reported"            "NVIDIA CDI spec written"          "$out"
+expect "the boot-time refresh is enabled" "SYSTEMCTL enable wolf-nvidia-cdi.service" "$out"
+expect "and keeps the installer's 32-bit choice" "DEFAULTS WOLF_NVIDIA_LIB32=0" "$out"
+
+# A fresh install with no preset takes the 32-bit libraries by default. (The
+# stub .run cannot be extracted, so the helper warns and writes 64-bit only.)
+out=$(run_cdi CTK_PRESENT=1 WOLF_NVIDIA_LIB32=)
+expect "a fresh install defaults to 32-bit on" "DEFAULTS WOLF_NVIDIA_LIB32=1" "$out"
+expect "and still writes the spec"           "NVIDIA CDI spec written"       "$out"
+
+# A re-run without a preset keeps an earlier opt-out of the 32-bit libraries.
+out=$(run_cdi CTK_PRESENT=1 PRESET_LIB32=0 WOLF_NVIDIA_LIB32=)
+expect "a re-run keeps an earlier 32-bit opt-out" "DEFAULTS WOLF_NVIDIA_LIB32=0" "$out"
+expect "and generates 64-bit only"              "64-bit only"                  "$out"
 
 # A host that already has it skips the apt work but still refreshes the spec,
 # so a driver upgrade cannot leave a stale spec behind.

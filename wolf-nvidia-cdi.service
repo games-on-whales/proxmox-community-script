@@ -1,0 +1,18 @@
+# Regenerates /etc/cdi/nvidia.json (64- and 32-bit NVIDIA driver) at boot, so a
+# driver upgrade takes effect in the next CT without re-running install.sh.
+# Installed by install.sh on NVIDIA hosts; see /usr/local/sbin/wolf-nvidia-cdi.
+[Unit]
+Description=Generate the NVIDIA CDI spec for docker-lxc-daemon
+Wants=network-online.target
+After=network-online.target systemd-modules-load.service
+Before=docker-lxc-daemon.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/wolf-nvidia-cdi
+ExecStart=/usr/local/sbin/wolf-nvidia-cdi
+# Only a driver change downloads its .run (several hundred MB).
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

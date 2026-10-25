@@ -66,7 +66,7 @@ if [ "$KEEP_DAEMON" = 1 ]; then
 else
   echo "   • stop docker-lxc-daemon and uninstall the package"
 fi
-echo "   • remove the uinput/udev/tmpfiles prerequisites and ${DEST}"
+echo "   • remove the uinput/udev/tmpfiles prerequisites, the NVIDIA CDI generator and ${DEST}"
 echo "   • unmount /etc/wolf and drop its fstab entry"
 if [ "$PURGE_STATE" = 1 ]; then
   echo -e "   ${RD}• DESTROY the state volume ${STATE_VOLUME:-(none found)} — config, pairings and the game library${CL}"
@@ -179,6 +179,18 @@ rm -f /etc/udev/rules.d/85-wolf-virtual-inputs.rules
 udevadm control --reload-rules >/dev/null 2>&1 || true
 rm -f /etc/modules-load.d/uinput.conf /etc/tmpfiles.d/wolf-proxmox.conf
 rm -rf "${WOLF_RUNTIME_DIR:-/run/wolf}" "$DEST"
+# The NVIDIA spec generator and the 32-bit libraries it staged. A spec that
+# still mounts them would break the next GPU container; without one, the daemon
+# generates a plain spec on demand.
+systemctl disable wolf-nvidia-cdi.service >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/wolf-nvidia-cdi.service /usr/local/sbin/wolf-nvidia-cdi \
+      /etc/default/wolf-nvidia-cdi
+systemctl daemon-reload >/dev/null 2>&1 || true
+if grep -q /var/lib/wolf-proxmox/nvidia-lib32/ /etc/cdi/nvidia.json 2>/dev/null; then
+  rm -f /etc/cdi/nvidia.json
+fi
+rm -rf /var/lib/wolf-proxmox/nvidia-lib32
+rmdir /var/lib/wolf-proxmox 2>/dev/null || true
 msg_ok "Prerequisites and ${DEST} removed"
 
 echo

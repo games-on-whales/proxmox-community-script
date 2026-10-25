@@ -13,6 +13,9 @@
 # WOLF_DISK_SIZE, WOLF_CPUS, WOLF_MEMORY, WOLF_RENDER_NODE and optionally WOLF_BRIDGE
 # ("name=prefix/subnet:gateway") in the environment. Anything left unset is
 # prompted for on a terminal, or takes its default when there is no terminal.
+# On NVIDIA, WOLF_NVIDIA_LIB32=0 skips the 32-bit driver libraries (and the
+# download of the matching driver package they come from); WOLF_NVIDIA_RUN
+# points at a local NVIDIA-Linux-x86_64-<version>.run to use instead.
 #
 set -euo pipefail
 
@@ -483,16 +486,34 @@ ensure_nvidia_cdi() {
 
   # Generate here rather than leaving it to the daemon's first container: a
   # failure now is on screen, where the daemon's is a journal line nobody reads.
-  # Regenerating every run also clears a spec left stale by a driver upgrade,
-  # which would otherwise bind libraries that no longer exist.
-  msg_info "Generating the NVIDIA CDI spec"
-  mkdir -p /etc/cdi
-  nvidia-ctk cdi generate --format=json --output=/etc/cdi/nvidia.json >/dev/null ||
-    die "nvidia-ctk cdi generate failed — is the driver loaded (nvidia-drm modeset=1)?"
-  # An empty spec parses cleanly and injects nothing, reproducing the very
-  # half-configured CT this function exists to prevent. Insist on device nodes.
-  grep -q '"deviceNodes"' /etc/cdi/nvidia.json ||
-    die "/etc/cdi/nvidia.json declares no device nodes — the CT would start without a GPU."
+  # The helper always rebuilds from a fresh `nvidia-ctk cdi generate`, adds the
+  # 32-bit driver libraries Steam needs (nvidia-ctk emits only 64-bit ones), and
+  # runs again at every boot, so a driver upgrade cannot leave a stale spec that
+  # binds libraries which no longer exist.
+  msg_info "Installing the NVIDIA CDI spec generator"
+  curl -fsSL "${REPO_RAW}/nvidia-cdi.sh" -o /usr/local/sbin/wolf-nvidia-cdi
+  chmod 0755 /usr/local/sbin/wolf-nvidia-cdi
+  curl -fsSL "${REPO_RAW}/wolf-nvidia-cdi.service" -o /etc/systemd/system/wolf-nvidia-cdi.service
+  # The boot-time run keeps the 32-bit choice; a re-run without a preset keeps
+  # the earlier one. WOLF_NVIDIA_RUN is not kept: it names one driver version's
+  # package and would be wrong after the next upgrade.
+  local lib32="${WOLF_NVIDIA_LIB32:-}"
+  if [ -z "$lib32" ] && [ -f /etc/default/wolf-nvidia-cdi ]; then
+    lib32=$(sed -n 's/^WOLF_NVIDIA_LIB32=//p' /etc/default/wolf-nvidia-cdi | tail -n1)
+  fi
+  [ "$lib32" = 0 ] || lib32=1
+  echo "WOLF_NVIDIA_LIB32=${lib32}" > /etc/default/wolf-nvidia-cdi
+  systemctl daemon-reload
+  systemctl enable wolf-nvidia-cdi.service >/dev/null 2>&1 ||
+    msg_err "Could not enable wolf-nvidia-cdi.service — re-run /usr/local/sbin/wolf-nvidia-cdi after driver upgrades."
+
+  if [ "$lib32" = 1 ]; then
+    msg_info "Generating the NVIDIA CDI spec (the first run per driver version fetches its .run for the 32-bit libraries)"
+  else
+    msg_info "Generating the NVIDIA CDI spec (64-bit only: WOLF_NVIDIA_LIB32=0)"
+  fi
+  WOLF_NVIDIA_LIB32="$lib32" /usr/local/sbin/wolf-nvidia-cdi ||
+    die "Could not generate /etc/cdi/nvidia.json — see the wolf-nvidia-cdi messages above."
   msg_ok "NVIDIA CDI spec written to /etc/cdi/nvidia.json"
 }
 
