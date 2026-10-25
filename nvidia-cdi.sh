@@ -16,8 +16,9 @@
 #
 # The 32-bit libraries come from the .run of exactly the running driver version,
 # extracted (never installed) into a per-version directory. Only files carrying
-# that version's suffix are taken, so a stale library from an older driver can
-# never be mixed in, and directories for other versions are removed.
+# that version's suffix are taken, plus the EGL platform libraries shipped in the
+# same package, so a stale library from an older driver can never be mixed in,
+# and directories for other versions are removed.
 #
 # The spec is always rebuilt from a fresh `nvidia-ctk cdi generate` and only then
 # extended, so there is nothing to clean up from a previous run, and the 64-bit
@@ -100,6 +101,13 @@ extract_lib32() {
     log "${run} has no 32-bit libraries for driver ${ver}"
     return 1
   fi
+  # The EGL platform libraries (gbm, wayland, xcb, xlib) carry their own version
+  # numbers; that they ship in this very package is what ties them to the driver.
+  for f in "${work}/x/32/"libnvidia-egl-*.so.*; do
+    [ -f "$f" ] && [ ! -L "$f" ] && is_elf32 "$f" || continue
+    install -m 0644 "$f" "${partial}/" || return 1
+    n=$((n + 1))
+  done
   # SONAME links (libGLX_nvidia.so.0 -> libGLX_nvidia.so.<ver>, ...), read from
   # each library's own DT_SONAME rather than guessed from its name.
   ldconfig -n "$partial" || { log "ldconfig could not read the 32-bit libraries"; return 1; }
@@ -134,7 +142,8 @@ add_lib32() {
     closedir $dh;
     my (%lib, @links);
     for my $f (@names) {
-      next if -l "$dir/$f" || !-f _ || $f !~ /\.so\.\Q$ver\E$/;
+      # The directory is staged per driver version, from the .run of that version.
+      next if -l "$dir/$f" || !-f _;
       $lib{$f} = 1;
       push @{ $e->{mounts} }, {
         hostPath => "$dir/$f", containerPath => "$ctdir/$f",

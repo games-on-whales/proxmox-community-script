@@ -29,7 +29,8 @@ if ! so "$T/probe.so" libprobe.so.1 -m32; then
 fi
 
 # make_run <version> — a fake NVIDIA-Linux-x86_64-<version>.run. Its 32/ dir
-# holds the driver's own libraries, a glvnd loader, a library from another
+# holds the driver's own libraries, an EGL platform library (its own version),
+# a glvnd loader, a library from another
 # driver version and a 64-bit object misfiled under 32/.
 make_run() {
   local v="$1" src="$T/run-$1/32"
@@ -38,6 +39,7 @@ make_run() {
   so "$src/libcuda.so.$v"           libcuda.so.1        -m32
   so "$src/libnvidia-glcore.so.$v"  "libnvidia-glcore.so.$v" -m32
   so "$src/libGL.so.1.7.0"          libGL.so.1          -m32
+  so "$src/libnvidia-egl-wayland.so.1.1.20" libnvidia-egl-wayland.so.1 -m32
   so "$src/libnvidia-old.so.470.1"  libnvidia-old.so.1  -m32
   so "$src/libnvidia-wrong.so.$v"   libnvidia-wrong.so.1 -m64
   ln -s "libcuda.so.$v" "$src/libcuda.so"
@@ -99,10 +101,10 @@ echo "32-bit libraries"
 out=$(run 580.1.2)
 expect "a fresh host succeeds"               "EXIT 0"                         "$out"
 expect "it downloads the running driver's .run" "580.1.2/NVIDIA-Linux-x86_64-580.1.2.run" "$(cat "$T/calls.log")"
-same   "only the driver's 32-bit libraries are mounted" \
-       "libGLX_nvidia.so.580.1.2 libcuda.so.580.1.2 libnvidia-glcore.so.580.1.2" "$(i386_mounts)"
+same   "only the driver's 32-bit libraries (and its EGL platforms) are mounted" \
+       "libGLX_nvidia.so.580.1.2 libcuda.so.580.1.2 libnvidia-egl-wayland.so.1.1.20 libnvidia-glcore.so.580.1.2" "$(i386_mounts)"
 same   "each SONAME gets a link; a full-version SONAME needs none" \
-       "libGLX_nvidia.so.580.1.2::/usr/lib/i386-linux-gnu/libGLX_nvidia.so.0 libcuda.so.580.1.2::/usr/lib/i386-linux-gnu/libcuda.so.1" \
+       "libGLX_nvidia.so.580.1.2::/usr/lib/i386-linux-gnu/libGLX_nvidia.so.0 libcuda.so.580.1.2::/usr/lib/i386-linux-gnu/libcuda.so.1 libnvidia-egl-wayland.so.1.1.20::/usr/lib/i386-linux-gnu/libnvidia-egl-wayland.so.1" \
        "$(i386_links)"
 same   "libraries are mounted from the version's own directory" \
        "$LIBS/580.1.2/libcuda.so.580.1.2" \
@@ -122,7 +124,7 @@ same   "and writes the same spec — nothing is duplicated" "$before" "$(cat "$S
 out=$(run 590.0.1)
 expect "a driver upgrade fetches the new .run" "590.0.1/NVIDIA-Linux-x86_64-590.0.1.run" "$(cat "$T/calls.log")"
 same   "only the new version's libraries are mounted" \
-       "libGLX_nvidia.so.590.0.1 libcuda.so.590.0.1 libnvidia-glcore.so.590.0.1" "$(i386_mounts)"
+       "libGLX_nvidia.so.590.0.1 libcuda.so.590.0.1 libnvidia-egl-wayland.so.1.1.20 libnvidia-glcore.so.590.0.1" "$(i386_mounts)"
 same   "and the old version's directory is gone" "590.0.1" "$(ls "$LIBS")"
 
 # A local .run for a different driver than the one running yields nothing.
@@ -135,7 +137,7 @@ same   "with no 32-bit entries"              ""                               "$
 out=$(run 590.0.1 WOLF_NVIDIA_RUN="$T/NVIDIA-Linux-x86_64-590.0.1.run")
 reject "a matching local .run is used without a download" "CURL"             "$(cat "$T/calls.log")"
 same   "and supplies the libraries" \
-       "libGLX_nvidia.so.590.0.1 libcuda.so.590.0.1 libnvidia-glcore.so.590.0.1" "$(i386_mounts)"
+       "libGLX_nvidia.so.590.0.1 libcuda.so.590.0.1 libnvidia-egl-wayland.so.1.1.20 libnvidia-glcore.so.590.0.1" "$(i386_mounts)"
 
 rm -rf "$LIBS"
 out=$(run 580.1.2 CURL_FAILS=1)
