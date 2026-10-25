@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 DEST=$(mktemp -d)
 trap 'rm -rf "$DEST"' EXIT
 cp .env.example "$DEST/.env"
+# shellcheck source=/dev/null
 source <(sed -n '/^set_env()/,/^}/p' install.sh)
 export WOLF_MEMORY=16384 WOLF_DISK_SIZE=100
 set_env WOLF_MEMORY 16384M
