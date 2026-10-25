@@ -31,9 +31,10 @@ COPY --chmod=755 startup-app.sh /opt/gow/startup-app.sh
 # straight from the upstream wolf-den image.
 COPY --from=wolfden /app /opt/wolf-den
 COPY --from=wolfden /usr/share/dotnet /usr/share/dotnet
-# socat (Wolf Den local API proxy) + .NET native deps (libicu). wolf:stable is
-# apt-based (Debian/Ubuntu), wolf:vulkan is Fedora (dnf) — install with whichever
-# is present. The libicu soname package version tracks the base (libicu72 on
+# python3 (Wolf Den API readiness probe) + .NET native deps (libicu). ICU is
+# required: Wolf Den formats dates with real cultures, not invariant mode.
+# wolf:stable is apt-based (Debian/Ubuntu), wolf:vulkan is Fedora (dnf) —
+# install with whichever is present. The libicu soname package version tracks the base (libicu72 on
 # Debian bookworm, libicu76 on Ubuntu plucky, ...), so resolve it dynamically
 # rather than hardcoding.
 RUN set -e; \
@@ -41,14 +42,14 @@ RUN set -e; \
     if command -v apt-get >/dev/null 2>&1; then \
         apt-get update; \
         icu_pkg="$(apt-cache pkgnames libicu 2>/dev/null | grep -E '^libicu[0-9]+$' | sort -V | tail -n1)"; \
-        apt-get install -y --no-install-recommends socat python3 "${icu_pkg:-libicu-dev}"; \
+        apt-get install -y --no-install-recommends python3 "${icu_pkg:-libicu-dev}"; \
         rm -rf /var/lib/apt/lists/*; \
     elif command -v dnf >/dev/null 2>&1; then \
-        dnf install -y socat python3 libicu findutils; dnf clean all; \
+        dnf install -y python3 libicu findutils; dnf clean all; \
     elif command -v microdnf >/dev/null 2>&1; then \
-        microdnf install -y socat python3 libicu findutils; microdnf clean all; \
+        microdnf install -y python3 libicu findutils; microdnf clean all; \
     else \
-        echo "no supported package manager to install socat/libicu" >&2; exit 1; \
+        echo "no supported package manager to install python3/libicu" >&2; exit 1; \
     fi; \
     dotnet --info >/dev/null
 COPY --chmod=755 wolf-den-launch.sh /opt/wolf-den/launch.sh
