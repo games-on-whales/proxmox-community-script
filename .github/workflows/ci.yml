@@ -1,0 +1,65 @@
+name: CI
+
+# Everything here runs without a Proxmox host: the tests/*.sh dry runs fake the
+# host commands, and the Compose files are only rendered, never brought up.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Dry-run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Run every suite even after a failure, so one run reports all of them.
+      - name: tests/*.sh
+        run: |
+          failed=()
+          for t in tests/*.sh; do
+            echo "::group::$t"
+            bash "$t" || failed+=("$t")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf '::error::%s failed\n' "${failed[@]}"
+            exit 1
+          fi
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck --version && shellcheck -S warning $(git ls-files '*.sh')
+
+  compose:
+    name: Compose (${{ matrix.channel }}${{ matrix.nvidia && ', NVIDIA' || '' }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [stable, beta]
+        nvidia: [false, true]
+    steps:
+      - uses: actions/checkout@v4
+      # Render the stack the installer would bring up, from .env.example, and
+      # check that both services resolve to the upstream images of the channel.
+      - name: docker compose config
+        env:
+          WOLF_CHANNEL: ${{ matrix.channel }}
+        run: |
+          cp .env.example .env
+          files=(-f docker-compose.yml)
+          [ "${{ matrix.nvidia }}" = true ] && files+=(-f docker-compose.nvidia.yml)
+          docker compose "${files[@]}" config > rendered.yml
+          cat rendered.yml
+          images=$(docker compose "${files[@]}" config --images | LC_ALL=C sort | tr '\n' ' ')
+          want="ghcr.io/games-on-whales/wolf-den:${WOLF_CHANNEL} ghcr.io/games-on-whales/wolf:${WOLF_CHANNEL} "
+          [ "$images" = "$want" ] || { echo "::error::images are '$images', expected '$want'"; exit 1; }

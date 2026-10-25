@@ -4,8 +4,9 @@
 #
 #   bash -c "$(curl -fsSL https://raw.githubusercontent.com/games-on-whales/proxmox-community-script/main/uninstall.sh)"
 #
-# Reverses install.sh: takes the Wolf CT and any session CTs down, removes
-# docker-lxc-daemon and the host prerequisites, and unmounts /etc/wolf.
+# Reverses install.sh: takes the Wolf and Wolf Den CTs and any session CTs
+# down, removes docker-lxc-daemon and the host prerequisites, and unmounts
+# /etc/wolf.
 #
 # The Wolf CT is declared restart:unless-stopped, and the daemon's restart
 # watcher brings back anything it finds exited without a recorded stop. `pct
@@ -60,7 +61,7 @@ STATE_VOLUME="${WOLF_STATE_VOLUME:-$(env_get WOLF_STATE_VOLUME)}"
 
 echo
 echo -e " ${BL}Removing Wolf on Proxmox.${CL} This will:"
-echo "   • stop and remove the Wolf CT and any session CTs it left behind"
+echo "   • stop and remove the Wolf and Wolf Den CTs and any session CTs left behind"
 if [ "$KEEP_DAEMON" = 1 ]; then
   echo "   • stop and disable docker-lxc-daemon (the package stays installed)"
 else
@@ -92,12 +93,12 @@ if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
     (cd "$DEST" && docker compose "${compose_args[@]}" down --remove-orphans --timeout 60) ||
       msg_err "compose down failed — falling back to removing the container directly"
   fi
-  # Whatever compose could not account for: the Wolf CT itself, and the session
-  # CTs Wolf launches (named after the app that started them, WolfSteam_...).
-  # They are Wolf's children, so they go with it.
+  # Whatever compose could not account for: the Wolf and Wolf Den CTs, and the
+  # session CTs Wolf launches (named after the app that started them,
+  # WolfSteam_...). They are Wolf's children, so they go with it.
   wolf_containers() {
     docker ps -a --format '{{.Names}}' 2>/dev/null |
-      grep -E '^(wolf$|Wolf|Prismlauncher)' || true
+      grep -E '^(wolf$|wolf-den$|Wolf|Prismlauncher)' || true
   }
 
   # Sweep until nothing Wolf-shaped is left. A container that reappears was put

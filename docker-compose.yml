@@ -5,19 +5,19 @@
 # launches becomes a sibling Proxmox CT (gow.pve=true) instead of a Docker
 # container. Bring it up against the host daemon:
 #
-#   docker compose build                                   # build the Wolf + Wolf Den image
 #   docker compose up -d                                   # Intel / AMD
 #   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d   # NVIDIA
 #
 # Prereqs (see README.md): docker-lxc-daemon installed on the PVE host, the host
 # GPU drivers loaded, and the Wolf virtual-input udev rules installed.
+#
+# Both services run the upstream Games-on-Whales images unmodified, from the
+# release channel in WOLF_CHANNEL (stable or beta). This recipe adds only files
+# mounted into them: the config bootstrap and the default profile set.
 
 services:
   wolf:
-    # Wolf + Wolf Den (:8080). Build locally, or pull a published tag.
-    image: ${WOLF_IMAGE:-ghcr.io/games-on-whales/wolf-proxmox:latest}
-    build:
-      context: .
+    image: ${WOLF_IMAGE:-ghcr.io/games-on-whales/wolf:${WOLF_CHANNEL:-stable}}
     container_name: wolf
     restart: unless-stopped
 
@@ -54,11 +54,17 @@ services:
       WOLF_ENCODER_NODE: ${WOLF_ENCODER_NODE:-}
       # Tag for the GOW app images seeded into config.toml (firefox, steam, ...).
       WOLF_IMAGE_TAG: ${WOLF_IMAGE_TAG:-edge}
+      # Only used if Wolf falls back to a PulseAudio sidecar; the upstream image
+      # normally runs PulseAudio itself.
+      WOLF_PULSE_IMAGE: ghcr.io/games-on-whales/pulseaudio:${WOLF_IMAGE_TAG:-edge}
       WOLF_LOG_LEVEL: ${WOLF_LOG_LEVEL:-INFO}
       WOLF_STOP_CONTAINER_ON_EXIT: "${WOLF_STOP_CONTAINER_ON_EXIT:-TRUE}"
 
     volumes:
-      - ./wolf-den-launch.sh:/opt/wolf-den/launch.sh:ro
+      # Seeds config.toml on first start and pins the app image tags on every
+      # start (wolf-config-init.sh); the upstream entrypoint sources it.
+      - ./wolf-config-init.sh:/etc/cont-init.d/40-wolf-proxmox.sh:ro
+      - ./config/default-config.toml:/opt/wolf-proxmox/default-config.toml:ro
       - /etc/wolf:/etc/wolf
       - /var/run/docker.sock:/var/run/docker.sock
       - /run/udev:/run/udev:ro
@@ -90,3 +96,33 @@ services:
       - NET_ADMIN
       - SYS_ADMIN
       - SYS_NICE
+
+  # Wolf Den (WolfLeash), the web UI for managing Wolf, as its own small CT. It
+  # talks to Wolf over the API socket Wolf creates at ${XDG_RUNTIME_DIR}/wolf.sock,
+  # which both CTs see at the same host path. The daemon publishes the UI on the
+  # Proxmox host itself: http://<pve-host>:${WOLF_DEN_PORT}.
+  wolf-den:
+    image: ${WOLF_DEN_IMAGE:-ghcr.io/games-on-whales/wolf-den:${WOLF_CHANNEL:-stable}}
+    container_name: wolf-den
+    restart: unless-stopped
+    depends_on:
+      - wolf
+
+    labels:
+      gow.pve: "true"
+      dld.storage: "${DLD_STORAGE:-local-lvm}"
+      dld.disksize: "${WOLF_DEN_DISK_SIZE:-8G}"
+
+    environment:
+      WOLF_SOCKET_PATH: ${WOLF_RUNTIME_DIR:-/run/wolf}/wolf.sock
+      # The image gives up after 30s without a socket. Wolf's first start in a
+      # fresh CT can take longer than that.
+      WOLF_SOCKET_TIMEOUT: "600"
+
+    volumes:
+      - ${WOLF_RUNTIME_DIR:-/run/wolf}:${WOLF_RUNTIME_DIR:-/run/wolf}
+      # Compatibility tools Wolf Den installs for Steam (appsettings.json).
+      - /etc/wolf:/etc/wolf
+
+    ports:
+      - "${WOLF_DEN_PORT:-8080}:8080"

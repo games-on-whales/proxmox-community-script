@@ -5,7 +5,8 @@ virtual desktops and applications to Moonlight clients — on a Proxmox VE host,
 backed by [`docker-lxc-daemon`](https://github.com/games-on-whales/LXC2Docker).
 This is the Proxmox counterpart of the SmoothNAS Wolf plugin: the same container
 shape, expressed as a Compose file against the host daemon, with the Wolf Den
-management UI bundled on `:8080`.
+management UI on `:8080`. Wolf and Wolf Den run the upstream Games-on-Whales
+images unmodified, from the `stable` or `beta` channel.
 
 ## Quick install (Proxmox host)
 
@@ -30,13 +31,16 @@ defaulting to the first entry, auto-selected when there is only one candidate.
 | CPU cores | `nproc` | `4 cores` |
 | RAM, MB | `MemTotal` | `4096 MB` |
 | GPU | render nodes under `/sys/class/drm/`, as `vendor name (driver, node)` | first listed |
+| App image build | `edge` or `fedora`, checked against ghcr | `edge` |
+| Wolf release channel | `stable` or `beta` (Wolf and Wolf Den) | `stable` |
 | Static LAN IP (CIDR) | must be CIDR | — |
 
 `nvidia_drm modeset=1` is probed before the GPU scan, since NVIDIA cards expose
 no render node without it. The bridge spec is derived from the LAN IP and the
 host's default route. To run unattended, preset `WOLF_CTID`, `DLD_STORAGE`,
 `WOLF_LAN_IP`, `WOLF_DISK_SIZE`, `WOLF_STATE_SIZE`, `WOLF_CPUS`, `WOLF_MEMORY`,
-`WOLF_RENDER_NODE` (and optionally `WOLF_BRIDGE`) — anything left unset takes
+`WOLF_RENDER_NODE`, `WOLF_IMAGE_TAG`, `WOLF_CHANNEL` (and optionally
+`WOLF_BRIDGE`) — anything left unset takes
 its default, and a preset that isn't a real candidate, or doesn't fit the host,
 aborts the install. Every size question states its unit and accepts the unit
 back (`100`, `100G` and `100 GB` all mean the same); an answer that isn't a size
@@ -111,7 +115,7 @@ The Compose file reproduces the SmoothNAS `wolf-runtime` + `gpu-*` profiles:
 | `gpu-intel` / `gpu-amd` | base file (`/dev/dri`) |
 | tier-bound `state` volume | `-v /etc/wolf:/etc/wolf` |
 | identity-mapped runtime vol | `-v ${WOLF_RUNTIME_DIR}:${WOLF_RUNTIME_DIR}` |
-| bundled Wolf Den (`:8080`) | `Dockerfile` (Wolf + Wolf Den wrapper entrypoint) |
+| bundled Wolf Den (`:8080`) | upstream `wolf-den` as a second service, sharing Wolf's API socket |
 | `hostExpose` Moonlight ports | `gow.lan` static IP on the CT |
 | SmoothNAS LXC runtime | `docker-lxc-daemon` on the PVE host |
 | _(new for Proxmox)_ | `gow.pve=true` → sessions are Proxmox CTs |
@@ -183,54 +187,58 @@ The Compose file reproduces the SmoothNAS `wolf-runtime` + `gpu-*` profiles:
 ## Bring up
 
 ```sh
-cp .env.example .env      # set WOLF_LAN_IP, DLD_STORAGE, WOLF_RENDER_NODE, ...
-# The image is published by the CI workflow; pull it (or `docker compose build`).
+cp .env.example .env      # set WOLF_LAN_IP, DLD_STORAGE, WOLF_RENDER_NODE, WOLF_CHANNEL, ...
 docker compose up -d                                             # Intel / AMD
 docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d   # NVIDIA
 ```
 
-- **Wolf Den UI:** `http://<WOLF_LAN_IP>:8080`
+- **Wolf Den UI:** `http://<proxmox-host>:8080` (`WOLF_DEN_PORT`). The daemon
+  publishes it on the Proxmox host, not on the Wolf CT's LAN IP.
 - **Pairing:** point Moonlight at `<WOLF_LAN_IP>`, then open
   `http://<WOLF_LAN_IP>:47989` to enter the PIN and pick a desktop/app.
 
 ## Ports (Moonlight)
 
-`47984/tcp` `47989/tcp` `47999/udp` `48010/tcp` `48100/udp` `48200/udp` (+ Wolf
-Den `8080/tcp`). With the `gow.lan` static IP these are reachable directly on the
-CT. On segmented LANs you may need a multicast querier on the bridge for
+`47984/tcp` `47989/tcp` `47999/udp` `48010/tcp` `48100/udp` `48200/udp`. With
+the `gow.lan` static IP these are reachable directly on the CT. Wolf Den's
+`8080/tcp` is on the Proxmox host instead. On segmented LANs you may need a multicast querier on the bridge for
 discovery.
 
-## Publishing the image
+## Images
 
-`ghcr.io/games-on-whales/wolf-proxmox:latest` is built by
-`.github/workflows/wolf-proxmox-image.yml`. Wolf fixes reach Proxmox only through
-a rebuild, so the workflow runs on its own: daily when `wolf:stable` or
-`wolf-den:stable` has a new digest, and on every push to `main` that changes the
-image's files. The upstream digests it was built from are recorded as image
-labels:
+There is no image of this recipe's own. The two services run the upstream images
+as published:
 
-```sh
-docker inspect --format '{{json .Config.Labels}}' ghcr.io/games-on-whales/wolf-proxmox:latest
-```
+| Service | Image |
+| --- | --- |
+| `wolf` | `ghcr.io/games-on-whales/wolf:${WOLF_CHANNEL}` |
+| `wolf-den` | `ghcr.io/games-on-whales/wolf-den:${WOLF_CHANNEL}` |
 
-Run the workflow manually to publish another tag or base (for example
-`wolf_base=ghcr.io/games-on-whales/wolf:vulkan`). `docker compose build` builds
-the image locally instead. Set `WOLF_IMAGE` to a pinned tag or digest to stop
-following `latest`.
+`WOLF_CHANNEL` is `stable` (the default) or `beta`. Wolf and Wolf Den updates
+arrive with `docker compose pull && docker compose up -d`. Set `WOLF_IMAGE` /
+`WOLF_DEN_IMAGE` to a tag or digest to pin either one instead. What this recipe
+adds is mounted into the Wolf container, not built into an image:
+`wolf-config-init.sh` (as `/etc/cont-init.d/40-wolf-proxmox.sh`) and
+`config/default-config.toml`.
+
+Wolf Den runs in its own small CT (`WOLF_DEN_DISK_SIZE`, default `8G`). It
+reaches Wolf through the API socket at `${WOLF_RUNTIME_DIR}/wolf.sock`, which
+both CTs bind from the same host directory.
 
 ## Configuration
 
-On first start the bundled `startup-app.sh` seeds `/etc/wolf/config.toml` with a
+On first start `wolf-config-init.sh` seeds `/etc/wolf/cfg/config.toml` with a
 fresh host uuid and the default app profile set (`config/default-config.toml` —
-Wolf UI, desktops, Steam, RetroArch, …), pins the GOW app images to
-`WOLF_IMAGE_TAG`, and installs `fake-udev`. Edit `/etc/wolf/config.toml`
-afterwards (or use Wolf Den) to customise apps; it is preserved across restarts.
+Wolf UI, desktops, Steam, RetroArch, …), and on every start it pins the GOW app
+images to `WOLF_IMAGE_TAG`. The upstream image's own startup does the rest
+(`fake-udev`, PulseAudio, Wolf). Edit `/etc/wolf/cfg/config.toml` afterwards (or
+use Wolf Den) to customise apps; it is preserved across restarts.
 
 **App image build (`edge` or `fedora`):** the installer asks which build of the
 **app** images to run — `edge` (Ubuntu-based, the tested default) or `fedora`
 (Fedora-based, newer Mesa). It applies to the apps Wolf launches (Firefox, Steam,
 RetroArch, XFCE, …) and the `pulseaudio` sidecar; **Wolf and Wolf Den themselves
-come from `WOLF_IMAGE` and are unaffected**. The installer checks the tag really
+come from `WOLF_CHANNEL` and are unaffected**. The installer checks the tag really
 is published on ghcr before writing it, so a typo fails at install rather than as
 an app that silently won't launch. On NVIDIA, non-`edge` builds have been seen to
 fall back to llvmpipe software rendering, which Wolf's capture/encode pipeline

@@ -10,7 +10,8 @@
 # session runs as a sibling Proxmox CT through the daemon.
 #
 # Non-interactive: preset WOLF_CTID, DLD_STORAGE, WOLF_LAN_IP (CIDR),
-# WOLF_DISK_SIZE, WOLF_CPUS, WOLF_MEMORY, WOLF_RENDER_NODE and optionally WOLF_BRIDGE
+# WOLF_DISK_SIZE, WOLF_CPUS, WOLF_MEMORY, WOLF_RENDER_NODE, WOLF_IMAGE_TAG,
+# WOLF_CHANNEL (stable or beta) and optionally WOLF_BRIDGE
 # ("name=prefix/subnet:gateway") in the environment. Anything left unset is
 # prompted for on a terminal, or takes its default when there is no terminal.
 # On NVIDIA, WOLF_NVIDIA_LIB32=0 skips the 32-bit driver libraries (and the
@@ -305,7 +306,7 @@ RENDER_NODE="${GPU_RENDER_NODES[$gpu_idx]}"; RENDER_VENDOR="${GPU_VENDORS[$gpu_i
 
 # --- Which build of the GOW app images to run ---
 # WOLF_IMAGE_TAG pins every app image (firefox, steam, retroarch, …) and the
-# pulseaudio sidecar; startup-app.sh rewrites config.toml to it on each start.
+# pulseaudio sidecar; wolf-config-init.sh rewrites config.toml to it on each start.
 # Both flavours are published for every app image this recipe seeds.
 if [ "$RENDER_VENDOR" = "NVIDIA" ]; then
   msg_info "On NVIDIA, non-edge app images can fall back to llvmpipe software rendering, causing a black screen in Wolf. Choose 'edge' for the tested default; WOLF_IMAGE_TAG in ${DEST}/.env can be changed later."
@@ -323,7 +324,7 @@ else
   IMAGE_TAG="${image_tags[$CHOICE_IDX]}"
   msg_info "App images: ${IMAGE_TAG}"
 fi
-# startup-app.sh rejects anything else, so fail here rather than at first boot.
+# wolf-config-init.sh rejects anything else, so fail here rather than at first boot.
 [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9._-]+$ ]] ||
   die "WOLF_IMAGE_TAG='${IMAGE_TAG}' is not a valid image tag."
 
@@ -355,6 +356,25 @@ for probe_image in steam pulseaudio; do
   esac
 done
 
+# --- Upstream release channel for Wolf and Wolf Den ---
+# Both run the Games-on-Whales images unmodified: wolf:<channel> and
+# wolf-den:<channel>. Upstream publishes both channels for both images.
+CHANNEL="${WOLF_CHANNEL:-}"
+if [ -n "$CHANNEL" ]; then
+  case "$CHANNEL" in
+    stable|beta) msg_info "Wolf channel: ${CHANNEL}" ;;
+    *) die "WOLF_CHANNEL='${CHANNEL}' must be 'stable' or 'beta'." ;;
+  esac
+else
+  channels=(stable beta)
+  channel_labels=(
+    "stable — the current Wolf and Wolf Den release"
+    "beta — upcoming release, for testing"
+  )
+  prompt_choice "Which Wolf release channel" "${channel_labels[@]}"
+  CHANNEL="${channels[$CHOICE_IDX]}"
+  msg_info "Wolf channel: ${CHANNEL}"
+fi
 
 # --- Static LAN IP + the daemon's bridge spec ---
 LAN_IP="${WOLF_LAN_IP:-}"
@@ -387,6 +407,7 @@ echo "  State:   ${STATE_GB} GB (/etc/wolf — config, pairings, game data)"
 echo "  Storage: ${STORAGE}"
 echo "  GPU:     ${gpu_labels[$gpu_idx]}"
 echo "  Apps:    ${IMAGE_TAG}"
+echo "  Wolf:    ${CHANNEL} (wolf:${CHANNEL} + wolf-den:${CHANNEL})"
 echo
 
 # ---------- 1. docker-lxc-daemon ----------
@@ -431,6 +452,14 @@ systemctl daemon-reload
 # enable --now leaves an already-running daemon on its old executable/settings.
 systemctl enable docker-lxc-daemon
 systemctl restart docker-lxc-daemon
+# systemd reports the restart done before the daemon has put
+# /var/run/docker.sock back. A first install reaches compose long after that;
+# a re-run, with nothing left to download, gets there first and fails with
+# "dial unix /var/run/docker.sock: connect: no such file or directory".
+daemon_ping() { curl -sf --max-time 2 --unix-socket /var/run/docker.sock http://localhost/_ping >/dev/null 2>&1; }
+for _ in $(seq 1 60); do daemon_ping && break; sleep 1; done
+daemon_ping ||
+  die "docker-lxc-daemon is not answering on /var/run/docker.sock — see: journalctl -u docker-lxc-daemon"
 msg_ok "docker-lxc-daemon running"
 
 # ---------- 2. host prerequisites ----------
@@ -641,14 +670,26 @@ else
   msg_ok "Wolf state volume ${STATE_VOLUME} mounted at /etc/wolf"
 fi
 
+# Wolf Den installs Steam compatibility tools here. Its image hands the
+# directory to its unprivileged app user on start, but only if it already
+# exists, and that user cannot create it under the root-owned /etc/wolf.
+mkdir -p /etc/wolf/compatibilitytools.d
+
 # ---------- 3. recipe + .env ----------
 msg_info "Fetching the Wolf recipe into ${DEST}"
 mkdir -p "$DEST"
 curl -fsSL "${REPO_RAW}/docker-compose.yml"        -o "${DEST}/docker-compose.yml"
 curl -fsSL "${REPO_RAW}/docker-compose.nvidia.yml" -o "${DEST}/docker-compose.nvidia.yml"
-curl -fsSL "${REPO_RAW}/wolf-den-launch.sh" -o "${DEST}/wolf-den-launch.sh"
-chmod 0755 "${DEST}/wolf-den-launch.sh"
+curl -fsSL "${REPO_RAW}/wolf-config-init.sh"       -o "${DEST}/wolf-config-init.sh"
+chmod 0755 "${DEST}/wolf-config-init.sh"
+mkdir -p "${DEST}/config"
+curl -fsSL "${REPO_RAW}/config/default-config.toml" -o "${DEST}/config/default-config.toml"
+# Earlier installs bundled the wrapper; it is not mounted any more.
+rm -f "${DEST}/wolf-den-launch.sh"
 [ -f "${DEST}/.env" ] || curl -fsSL "${REPO_RAW}/.env.example" -o "${DEST}/.env"
+# Earlier installs pinned the recipe's own wolf-proxmox image, which is no
+# longer published; drop that so WOLF_CHANNEL picks the upstream image.
+sed -i '/^WOLF_IMAGE=ghcr\.io\/games-on-whales\/wolf-proxmox[:@]/d' "${DEST}/.env"
 
 set_env() { # set_env KEY VALUE — replace the key, or append it if absent
   local key="$1" value="$2" file="${DEST}/.env"
@@ -670,6 +711,7 @@ set_env WOLF_CPUS        "$CT_CPU"
 set_env WOLF_MEMORY      "${CT_RAM}M"
 set_env WOLF_RENDER_NODE "$RENDER_NODE"
 set_env WOLF_IMAGE_TAG   "$IMAGE_TAG"
+set_env WOLF_CHANNEL     "$CHANNEL"
 set_env WOLF_STATE_SIZE  "${STATE_GB}G"
 # Record the volume that /etc/wolf came from, so a re-run adopts exactly this
 # one rather than rediscovering it — and so the uninstaller knows what it may
@@ -718,17 +760,22 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 # ---------- 4. bring up ----------
-msg_info "Pulling the Wolf image and starting the stack (first pull can take a while)"
+msg_info "Pulling the Wolf and Wolf Den images and starting the stack (first pull can take a while)"
 cd "$DEST"
 docker compose "${COMPOSE_ARGS[@]}" pull 2>/dev/null || true
 docker compose "${COMPOSE_ARGS[@]}" up -d
 msg_ok "Wolf is up"
 
 ip="${LAN_IP%/*}"
+# Wolf Den is published on the Proxmox host, not on the Wolf CT's LAN IP.
+host_ip=$(ip -4 route get 1.1.1.1 2>/dev/null |
+  awk '{for (i = 1; i < NF; i++) if ($i == "src") {print $(i + 1); exit}}') || host_ip=""
+host_ip="${host_ip:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+den_port=$(sed -n 's/^WOLF_DEN_PORT=//p' "${DEST}/.env" | tail -1)
 echo
 echo -e " ${GN}Wolf on Proxmox is ready.${CL}"
-echo -e "   ${BL}Wolf Den UI:${CL}  http://${ip}:8080"
+echo -e "   ${BL}Wolf Den UI:${CL}  http://${host_ip:-<proxmox-host>}:${den_port:-8080}"
 echo -e "   ${BL}Moonlight:${CL}    add host ${ip}, then enter the PIN at http://${ip}:47989"
-echo -e "   ${BL}Config:${CL}       ${DEST}/.env  and  /etc/wolf/config.toml (or Wolf Den)"
+echo -e "   ${BL}Config:${CL}       ${DEST}/.env  and  /etc/wolf/cfg/config.toml (or Wolf Den)"
 echo -e "   ${BL}Remove:${CL}       bash -c \"\$(curl -fsSL ${REPO_RAW}/uninstall.sh)\""
 echo
