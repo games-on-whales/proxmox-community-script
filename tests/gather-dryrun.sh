@@ -35,6 +35,7 @@ nproc()    { echo 16; }
 lspci()    { echo '00:02.0 "VGA compatible controller" "NVIDIA" "GeForce RTX 5080"'; }
 ip()       { echo "default via 192.168.1.1 dev vmbr0"; }
 modinfo()  { return 1; }   # no nvidia module here, so the probe is skipped
+timedatectl() { echo Europe/Berlin; }
 # Registry probe: never touch the network from a test. TAG_EXISTS=0 models a
 # tag ghcr does not publish; TAG_UNREACHABLE=1 models ghcr being unreachable.
 curl() {
@@ -56,6 +57,10 @@ if [ "${TWO_GPUS:-1}" = 1 ]; then
   ln -s drivers/amdgpu "$FAKE/renderD129/device/driver"
 fi
 echo "MemTotal:       65536000 kB" > "$FAKE/meminfo"   # 64000 MB host
+# A German host: its keyboard and locale are what the app questions offer.
+mkdir -p "$FAKE/default"
+printf 'XKBMODEL="pc105"\nXKBLAYOUT="de"\nXKBVARIANT="nodeadkeys"\n' > "$FAKE/default/keyboard"
+echo 'LANG=de_DE.UTF-8' > "$FAKE/default/locale"
 
 # A two-node cluster: this node ('mjolnir') owns CT 100, the peer ('pve1') owns
 # CT 101 and VM 102 — ids the daemon's local-only scan cannot see, and the whole
@@ -73,10 +78,11 @@ sed -n '/---------- prompt helpers/,$p' install.sh |
       -e '/^# ---------- 1\. /,$d' \
       -e 's#/sys/class/drm/renderD\*#'"$FAKE"'/renderD*#' \
       -e 's#/proc/meminfo#'"$FAKE"'/meminfo#' \
-      -e 's#/etc/pve/#'"$FAKE"'/pve/#g' > "$FAKE/section.sh"
+      -e 's#/etc/pve/#'"$FAKE"'/pve/#g' \
+      -e 's#/etc/default/#'"$FAKE"'/default/#g' > "$FAKE/section.sh"
 # shellcheck disable=SC1090
 source "$FAKE/section.sh"
-echo "RESULT ctid=$CT_ID storage=$STORAGE disk=$CT_DISK state=$STATE_GB cpu=$CT_CPU ram=$CT_RAM gpu=$RENDER_NODE vendor=$RENDER_VENDOR apps=$IMAGE_TAG channel=$CHANNEL"
+echo "RESULT ctid=$CT_ID storage=$STORAGE disk=$CT_DISK state=$STATE_GB cpu=$CT_CPU ram=$CT_RAM gpu=$RENDER_NODE vendor=$RENDER_VENDOR apps=$IMAGE_TAG channel=$CHANNEL kb=$KEYBOARD variant=$KEYBOARD_VARIANT locale=$LOCALE tz=$TZ_NAME"
 rm -rf "$FAKE"
 HARNESS
   local out
@@ -180,22 +186,22 @@ expect "unknown storage is rejected" "Storage nope not found" "$out"
 
 # Interactive: answers are taken, and a bad answer re-asks instead of aborting.
 # ct id, storage, disk, state volume, cpu, ram, gpu, app images, channel, ip
-out=$(run_gather tty '250\n2\n200\n300\n4\n16384\n2\n1\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '250\n2\n200\n300\n4\n16384\n2\n1\n1\n192.168.1.77/24\n\n\n\n')
 expect "interactive answers are used" \
   "RESULT ctid=250 storage=stores disk=200 state=300 cpu=4 ram=16384 gpu=/dev/dri/renderD129 vendor=AMD apps=edge" "$out"
 
 # An empty answer takes the offered default — the lowest free id in the cluster.
-out=$(run_gather tty '\n2\n200\n300\n4\n16384\n2\n1\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '\n2\n200\n300\n4\n16384\n2\n1\n1\n192.168.1.77/24\n\n\n\n')
 expect "the CT id prompt offers the lowest free id" "CT id for the Wolf container [103]" "$out"
 expect "an empty answer takes that default" "RESULT ctid=103 " "$out"
 
 # A taken id re-asks rather than aborting, exactly like an out-of-range one.
-out=$(run_gather tty '101\n99\n250\n2\n200\n300\n4\n16384\n2\n1\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '101\n99\n250\n2\n200\n300\n4\n16384\n2\n1\n1\n192.168.1.77/24\n\n\n\n')
 expect "a taken id re-asks" "CT/VM 101 already exists in this cluster. Pick a free id." "$out"
 expect "an id below the floor re-asks" "Invalid id. Enter a number between 100 and 999999999." "$out"
 expect "the re-asked id is used" "RESULT ctid=250 " "$out"
 
-out=$(run_gather tty '250\n9\n2\n999999\n50\n999999\n100\n99\n4\n999999\n8192\n9\n1\n2\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '250\n9\n2\n999999\n50\n999999\n100\n99\n4\n999999\n8192\n9\n1\n2\n1\n192.168.1.77/24\n\n\n\n')
 expect "out-of-range answers re-ask" "Invalid selection. Enter a number between 1 and 2." "$out"
 expect "out-of-range values re-ask" \
   "RESULT ctid=250 storage=stores disk=50 state=100 cpu=4 ram=8192 gpu=/dev/dri/renderD128 vendor=NVIDIA apps=fedora" "$out"
@@ -220,19 +226,19 @@ expect "unreachable still installs the choice" "apps=fedora"                  "$
 
 # Every size question says what it is measured in, and answers that carry the
 # unit back mean what they say rather than being rejected.
-out=$(run_gather tty '\n2\n\n\n\n\n1\n1\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '\n2\n\n\n\n\n1\n1\n1\n192.168.1.77/24\n\n\n\n')
 expect "the disk question is in GB"   "Disk size for the Wolf CT rootfs (6675 GB free on stores) [100 GB]" "$out"
 expect "the state question is in GB"  "game data — 6575 GB available) [100 GB]"                            "$out"
 expect "the RAM question is in MB"    "RAM for the Wolf CT (host has 64000 MB) [4096 MB]"                  "$out"
 expect "both sizes default to 100 GB" "ctid=103 storage=stores disk=100 state=100 cpu=4 ram=4096"          "$out"
 
-out=$(run_gather tty '\n2\n250G\n300 GB\n8\n8192M\n1\n1\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '\n2\n250G\n300 GB\n8\n8192M\n1\n1\n1\n192.168.1.77/24\n\n\n\n')
 expect "answers may carry their unit" \
   "ctid=103 storage=stores disk=250 state=300 cpu=8 ram=8192 gpu=/dev/dri/renderD128 vendor=NVIDIA" "$out"
 
 # A typo must re-ask. Silently taking the default is how someone ends up with a
 # volume they did not ask for and no sign that the question was ever answered.
-out=$(run_gather tty '\n2\nbig\n0\n120\n\n\n\n1\n1\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '\n2\nbig\n0\n120\n\n\n\n1\n1\n1\n192.168.1.77/24\n\n\n\n')
 expect "a non-numeric size re-asks"   "Invalid value. Enter a whole number between 1 and 6675 GB." "$out"
 expect "the re-asked answer is used"  "ctid=103 storage=stores disk=120 state=100"                 "$out"
 
@@ -242,11 +248,42 @@ expect "offers the stable channel"     "stable — the current Wolf and Wolf Den
 expect "offers the beta channel"       "beta — upcoming release"                        "$out"
 expect "the channel defaults to stable" "channel=stable"                                "$out"
 
-out=$(run_gather tty '\n2\n\n\n\n\n1\n1\n2\n192.168.1.77/24\n')
+out=$(run_gather tty '\n2\n\n\n\n\n1\n1\n2\n192.168.1.77/24\n\n\n\n')
 expect "beta can be chosen"            "channel=beta"                                   "$out"
 
 out=$(run_gather notty '' WOLF_CHANNEL=nightly WOLF_LAN_IP=192.168.1.50/24)
 expect "an unknown channel is rejected" "WOLF_CHANNEL='nightly' must be 'stable' or 'beta'" "$out"
+
+# Keyboard, locale and timezone default to the host's own.
+out=$(run_gather notty '' WOLF_LAN_IP=192.168.1.50/24)
+expect "app settings default to the host's" \
+  "kb=de variant=nodeadkeys locale=de_DE.UTF-8 tz=Europe/Berlin" "$out"
+
+out=$(run_gather notty '' WOLF_KEYBOARD=fr WOLF_LOCALE=fr_FR.UTF-8 WOLF_TZ=Europe/Paris \
+  WOLF_LAN_IP=192.168.1.50/24)
+expect "app settings presets are used as-is" \
+  "kb=fr variant= locale=fr_FR.UTF-8 tz=Europe/Paris" "$out"
+
+out=$(run_gather notty '' WOLF_KEYBOARD= WOLF_LOCALE= WOLF_TZ= WOLF_LAN_IP=192.168.1.50/24)
+expect "empty presets leave the apps' default" "kb= variant= locale= tz=" "$out"
+
+out=$(run_gather notty '' WOLF_KEYBOARD=de WOLF_KEYBOARD_VARIANT=mac WOLF_LAN_IP=192.168.1.50/24)
+expect "a preset variant is kept" "kb=de variant=mac " "$out"
+
+out=$(run_gather notty '' WOLF_TZ='Europe/Berlin; rm' WOLF_LAN_IP=192.168.1.50/24)
+expect "a malformed timezone is rejected" "is not a timezone name" "$out"
+
+out=$(run_gather notty '' WOLF_KEYBOARD='de"' WOLF_LAN_IP=192.168.1.50/24)
+expect "a malformed layout is rejected" "is not an XKB layout" "$out"
+
+out=$(run_gather tty '\n2\n\n\n\n\n1\n1\n1\n192.168.1.77/24\nus\n-\nAmerica/New_York\n')
+expect "the layout question offers the host's" "Keyboard layout for the apps (XKB, e.g. de, fr, us; - for none) [de]" "$out"
+expect "the timezone question offers the host's" "[Europe/Berlin]" "$out"
+expect "interactive app settings are used" "kb=us variant= locale= tz=America/New_York" "$out"
+
+out=$(run_gather tty '\n2\n\n\n\n\n1\n1\n1\n192.168.1.77/24\nde"x\nch\n\n\n')
+expect "a malformed layout re-asks" "Invalid value 'de\"x'." "$out"
+expect "the re-asked layout is used" "kb=ch variant= locale=de_DE.UTF-8" "$out"
 
 # A single GPU needs no question — it is reported and used.
 out=$(run_gather notty '' TWO_GPUS=0 WOLF_LAN_IP=192.168.1.50/24)

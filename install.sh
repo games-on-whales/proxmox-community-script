@@ -11,9 +11,12 @@
 #
 # Non-interactive: preset WOLF_CTID, DLD_STORAGE, WOLF_LAN_IP (CIDR),
 # WOLF_DISK_SIZE, WOLF_CPUS, WOLF_MEMORY, WOLF_RENDER_NODE, WOLF_IMAGE_TAG,
-# WOLF_CHANNEL (stable or beta) and optionally WOLF_BRIDGE
+# WOLF_CHANNEL (stable or beta), WOLF_KEYBOARD (+ WOLF_KEYBOARD_VARIANT),
+# WOLF_LOCALE, WOLF_TZ and optionally WOLF_BRIDGE
 # ("name=prefix/subnet:gateway") in the environment. Anything left unset is
-# prompted for on a terminal, or takes its default when there is no terminal.
+# prompted for on a terminal, or takes its default when there is no terminal;
+# keyboard, locale and timezone default to the host's own. Preset any of those
+# to an empty value to leave the apps' own default in place.
 # On NVIDIA, WOLF_NVIDIA_LIB32=0 skips the 32-bit driver libraries (and the
 # download of the matching driver package they come from); WOLF_NVIDIA_RUN
 # points at a local NVIDIA-Linux-x86_64-<version>.run to use instead.
@@ -92,6 +95,25 @@ prompt_number() {
     [ -t 0 ] || die "No terminal to re-ask on — fix the preset value and re-run."
   done
   NUMBER_VALUE="$value"
+}
+
+# Prompt for a free-text value matching <regex>, re-asking until it does.
+# Usage: prompt_text <text> <default> <regex>
+# An empty answer takes the default; "-" stands for no value at all.
+prompt_text() {
+  local prompt_text="$1" default="$2" regex="$3" value
+  while true; do
+    if [ -t 0 ]; then read -rp "${prompt_text} [${default:-none}]: " value; else value=""; fi
+    value="${value//[[:space:]]/}"
+    value="${value:-$default}"
+    [ "$value" = "-" ] && value=""
+    if [[ "$value" =~ $regex ]]; then
+      break
+    fi
+    echo "Invalid value '${value}'."
+    [ -t 0 ] || die "No terminal to re-ask on — fix the preset value and re-run."
+  done
+  TEXT_VALUE="$value"
 }
 
 cat <<'BANNER'
@@ -396,6 +418,57 @@ if [ -z "$BRIDGE_SPEC" ]; then
   BRIDGE_SPEC="${brdev}=${prefix}/${sub}:${gw}"
 fi
 
+# --- Keyboard layout, locale and timezone inside the apps ---
+# Without these every session comes up with a US keyboard, English UI and UTC.
+# wolf-config-init.sh adds them to every app's env on each start, unless the app
+# sets its own. Same characters it accepts, so a bad value fails here, not at
+# first boot.
+KEYBOARD_RE='^[A-Za-z0-9_,-]*$'
+LOCALE_RE='^[A-Za-z0-9_.@-]*$'
+TZ_RE='^[A-Za-z0-9_+/-]*$'
+host_setting() { # host_setting <file> <KEY> — a KEY=value from a Debian defaults file
+  [ -r "$1" ] && sed -n -E "s/^[[:space:]]*$2=[\"']?([^\"']*)[\"']?[[:space:]]*$/\1/p" "$1" | tail -1
+}
+host_layout=$(host_setting /etc/default/keyboard XKBLAYOUT || true)
+host_variant=$(host_setting /etc/default/keyboard XKBVARIANT || true)
+host_locale=$(host_setting /etc/default/locale LANG || true)
+host_tz=$(timedatectl show -p Timezone --value 2>/dev/null || true)
+[ -n "$host_tz" ] || host_tz=$(cat /etc/timezone 2>/dev/null || true)
+
+if [ -n "${WOLF_KEYBOARD+set}" ]; then
+  KEYBOARD="$WOLF_KEYBOARD"
+else
+  prompt_text " Keyboard layout for the apps (XKB, e.g. de, fr, us; - for none)" "$host_layout" "$KEYBOARD_RE"
+  KEYBOARD="$TEXT_VALUE"
+fi
+[[ "$KEYBOARD" =~ $KEYBOARD_RE ]] || die "WOLF_KEYBOARD='${KEYBOARD}' is not an XKB layout."
+# The host's variant belongs to the host's layout; it means nothing for another.
+if [ -n "${WOLF_KEYBOARD_VARIANT+set}" ]; then
+  KEYBOARD_VARIANT="$WOLF_KEYBOARD_VARIANT"
+elif [ -n "$KEYBOARD" ] && [ "$KEYBOARD" = "$host_layout" ]; then
+  KEYBOARD_VARIANT="$host_variant"
+else
+  KEYBOARD_VARIANT=""
+fi
+[[ "$KEYBOARD_VARIANT" =~ $KEYBOARD_RE ]] ||
+  die "WOLF_KEYBOARD_VARIANT='${KEYBOARD_VARIANT}' is not an XKB variant."
+
+if [ -n "${WOLF_LOCALE+set}" ]; then
+  LOCALE="$WOLF_LOCALE"
+else
+  prompt_text " Locale for the apps (e.g. de_DE.UTF-8; - for none)" "$host_locale" "$LOCALE_RE"
+  LOCALE="$TEXT_VALUE"
+fi
+[[ "$LOCALE" =~ $LOCALE_RE ]] || die "WOLF_LOCALE='${LOCALE}' is not a locale name."
+
+if [ -n "${WOLF_TZ+set}" ]; then
+  TZ_NAME="$WOLF_TZ"
+else
+  prompt_text " Timezone for the apps (e.g. Europe/Berlin; - for none)" "$host_tz" "$TZ_RE"
+  TZ_NAME="$TEXT_VALUE"
+fi
+[[ "$TZ_NAME" =~ $TZ_RE ]] || die "WOLF_TZ='${TZ_NAME}' is not a timezone name."
+
 msg_info "Wolf on Proxmox setup"
 echo "  CT id:   ${CT_ID}"
 echo "  IP:      ${LAN_IP}"
@@ -408,6 +481,9 @@ echo "  Storage: ${STORAGE}"
 echo "  GPU:     ${gpu_labels[$gpu_idx]}"
 echo "  Apps:    ${IMAGE_TAG}"
 echo "  Wolf:    ${CHANNEL} (wolf:${CHANNEL} + wolf-den:${CHANNEL})"
+echo "  Keymap:  ${KEYBOARD:-app default}${KEYBOARD_VARIANT:+ (${KEYBOARD_VARIANT})}"
+echo "  Locale:  ${LOCALE:-app default}"
+echo "  TZ:      ${TZ_NAME:-app default}"
 echo
 
 # ---------- 1. docker-lxc-daemon ----------
@@ -712,6 +788,10 @@ set_env WOLF_MEMORY      "${CT_RAM}M"
 set_env WOLF_RENDER_NODE "$RENDER_NODE"
 set_env WOLF_IMAGE_TAG   "$IMAGE_TAG"
 set_env WOLF_CHANNEL     "$CHANNEL"
+set_env WOLF_KEYBOARD    "$KEYBOARD"
+set_env WOLF_KEYBOARD_VARIANT "$KEYBOARD_VARIANT"
+set_env WOLF_LOCALE      "$LOCALE"
+set_env WOLF_TZ          "$TZ_NAME"
 set_env WOLF_STATE_SIZE  "${STATE_GB}G"
 # Record the volume that /etc/wolf came from, so a re-run adopts exactly this
 # one rather than rediscovering it — and so the uninstaller knows what it may

@@ -69,10 +69,97 @@ case "$out" in
   *) ok "an invalid tag aborts the start" ;;
 esac
 
+# Keyboard, locale and timezone reach every docker app's env.
+state="$work/kb"
+run_init "$state" WOLF_KEYBOARD=de WOLF_KEYBOARD_VARIANT=nodeadkeys WOLF_LOCALE=de_DE.UTF-8 \
+  WOLF_TZ=Europe/Berlin >/dev/null
+cfg="$state/cfg/config.toml"
+docker_apps=$(grep -cE "^type = ['\"]docker['\"]" "$cfg")
+for v in XKB_DEFAULT_LAYOUT=de XKB_DEFAULT_VARIANT=nodeadkeys LANG=de_DE.UTF-8 \
+         LANGUAGE=de_DE:de TZ=Europe/Berlin; do
+  n=$(grep -o "\"$v\"" "$cfg" | wc -l)
+  if [ "$n" -eq "$docker_apps" ]; then ok "$v is set for all $docker_apps docker apps"
+  else bad "$v is set for all $docker_apps docker apps" "$docker_apps, got $n"; fi
+done
+expect "multi-line env arrays stay multi-line" "    'LOGLEVEL=INFO',
+    \"XKB_DEFAULT_LAYOUT=de\"," "$(cat "$cfg")"
+expect "one-line env arrays stay one-line" \
+  "env = ['RUN_SWAY=true', 'GOW_REQUIRED_DEVICES=/dev/input/* /dev/dri/* /dev/nvidia*', \"XKB_DEFAULT_LAYOUT=de\"" "$(cat "$cfg")"
+expect "a process runner gets no env" 'type = "process"
+run_cmd' "$(cat "$cfg")"
+
+# A restart with the same settings changes nothing.
+cp "$cfg" "$work/kb.before"
+run_init "$state" WOLF_KEYBOARD=de WOLF_KEYBOARD_VARIANT=nodeadkeys WOLF_LOCALE=de_DE.UTF-8 \
+  WOLF_TZ=Europe/Berlin >/dev/null
+if cmp -s "$cfg" "$work/kb.before"; then ok "a restart with the same settings is a no-op"
+else bad "a restart with the same settings is a no-op" "no diff"; fi
+
+# Apps from Wolf Den, and per-app values: what an app sets itself is kept, and a
+# docker runner without an env gets one. The base_create_json string mentions
+# env too, and must not be touched.
+cat >> "$cfg" <<'TOML'
+
+[[profiles.apps]]
+title = 'Own TZ'
+
+[profiles.apps.runner]
+base_create_json = """
+{ "Env": [
+env = [ 'NOT=me' ]
+] }
+"""
+env = [ 'TZ=America/New_York', "LANG=en_US.UTF-8" ] # mine
+image = 'ghcr.io/example/own:1'
+type = 'docker'
+
+[[profiles.apps]]
+title = 'No env'
+
+[profiles.apps.runner]
+image = 'ghcr.io/example/none:1'
+type = 'docker'
+
+[profiles.apps.video]
+source = 'x'
+TOML
+run_init "$state" WOLF_KEYBOARD=de WOLF_LOCALE=de_DE.UTF-8 WOLF_TZ=Europe/Vienna >/dev/null
+all=$(cat "$cfg")
+expect "a per-app TZ is kept" \
+  "env = ['TZ=America/New_York', \"LANG=en_US.UTF-8\", \"XKB_DEFAULT_LAYOUT=de\", \"LANGUAGE=de_DE:de\"] # mine" "$all"
+expect "env text inside a string is left alone" "env = [ 'NOT=me' ]" "$all"
+expect "a runner without env gets one" "image = 'ghcr.io/example/none:1'
+type = 'docker'
+env = [\"XKB_DEFAULT_LAYOUT=de\", \"LANG=de_DE.UTF-8\", \"LANGUAGE=de_DE:de\", \"TZ=Europe/Vienna\"]
+
+[profiles.apps.video]" "$all"
+# What the last start wrote follows .env: TZ changed, the variant was dropped.
+expect "a changed setting is updated" '"TZ=Europe/Vienna"' "$all"
+case "$all" in
+  *"TZ=Europe/Berlin"*|*"XKB_DEFAULT_VARIANT"*) bad "old values the recipe wrote are replaced or dropped" "no Berlin, no variant" ;;
+  *) ok "old values the recipe wrote are replaced or dropped" ;;
+esac
+
+# Nothing set: nothing is added.
+run_init "$work/none" >/dev/null
+case "$(cat "$work/none/cfg/config.toml")" in
+  *XKB_DEFAULT_LAYOUT*|*'"LANG='*|*'"TZ='*) bad "no settings, no app env" "untouched env" ;;
+  *) ok "no settings, no app env" ;;
+esac
+
+for v in 'WOLF_KEYBOARD=de"' 'WOLF_LOCALE=de DE' 'WOLF_TZ=Europe/Berlin|x'; do
+  out=$(run_init "$work/badenv" "$v" || true)
+  case "$out" in
+    *"Invalid ${v%%=*}"*) case "$out" in *"ENTRYPOINT CONTINUED"*) bad "invalid $v aborts" "abort" ;; *) ok "invalid $v aborts" ;; esac ;;
+    *) bad "invalid $v aborts" "Invalid ${v%%=*}" ;;
+  esac
+done
+
 # Sourced into the entrypoint's shell, so it must not leak its own variables.
 leak=$(env HOST_APPS_STATE_FOLDER="$work/leak" bash -c '
-  set -e; gow_log() { :; }; source "$1"; echo "${wolf_cfg_file-unset} ${wolf_default_cfg-unset}"' _ "$work/init.sh")
-expect "leaves no variables behind" "unset unset" "$leak"
+  set -e; gow_log() { :; }; source "$1"
+  echo "${wolf_cfg_file-unset} ${wolf_default_cfg-unset} ${wolf_env_want-unset} ${wolf_env_prev-unset}"' _ "$work/init.sh")
+expect "leaves no variables behind" "unset unset unset unset" "$leak"
 
 echo
 echo "  ${pass} passed, ${fail} failed"
