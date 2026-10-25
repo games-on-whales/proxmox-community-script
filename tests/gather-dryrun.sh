@@ -76,7 +76,7 @@ sed -n '/---------- prompt helpers/,$p' install.sh |
       -e 's#/etc/pve/#'"$FAKE"'/pve/#g' > "$FAKE/section.sh"
 # shellcheck disable=SC1090
 source "$FAKE/section.sh"
-echo "RESULT ctid=$CT_ID storage=$STORAGE disk=$CT_DISK state=$STATE_GB cpu=$CT_CPU ram=$CT_RAM gpu=$RENDER_NODE vendor=$RENDER_VENDOR apps=$IMAGE_TAG"
+echo "RESULT ctid=$CT_ID storage=$STORAGE disk=$CT_DISK state=$STATE_GB cpu=$CT_CPU ram=$CT_RAM gpu=$RENDER_NODE vendor=$RENDER_VENDOR apps=$IMAGE_TAG channel=$CHANNEL"
 rm -rf "$FAKE"
 HARNESS
   local out
@@ -97,10 +97,10 @@ echo "install.sh gather section:"
 
 # Presets are taken verbatim and nothing is asked.
 out=$(run_gather notty '' WOLF_CTID=150 DLD_STORAGE=stores WOLF_DISK_SIZE=500G WOLF_STATE_SIZE=1000G WOLF_CPUS=8 \
-  WOLF_MEMORY=32768M WOLF_RENDER_NODE=/dev/dri/renderD129 WOLF_IMAGE_TAG=fedora \
+  WOLF_MEMORY=32768M WOLF_RENDER_NODE=/dev/dri/renderD129 WOLF_IMAGE_TAG=fedora WOLF_CHANNEL=beta \
   WOLF_LAN_IP=192.168.1.50/24)
 expect "presets are used as-is" \
-  "RESULT ctid=150 storage=stores disk=500 state=1000 cpu=8 ram=32768 gpu=/dev/dri/renderD129 vendor=AMD apps=fedora" "$out"
+  "RESULT ctid=150 storage=stores disk=500 state=1000 cpu=8 ram=32768 gpu=/dev/dri/renderD129 vendor=AMD apps=fedora channel=beta" "$out"
 
 # The CT id is checked across every node in the cluster, not just this one —
 # the daemon's own allocator only sees this node, which is what collides.
@@ -179,23 +179,23 @@ out=$(run_gather notty '' DLD_STORAGE=nope WOLF_LAN_IP=192.168.1.50/24)
 expect "unknown storage is rejected" "Storage nope not found" "$out"
 
 # Interactive: answers are taken, and a bad answer re-asks instead of aborting.
-# ct id, storage, disk, state volume, cpu, ram, gpu, app images, ip
-out=$(run_gather tty '250\n2\n200\n300\n4\n16384\n2\n1\n192.168.1.77/24\n')
+# ct id, storage, disk, state volume, cpu, ram, gpu, app images, channel, ip
+out=$(run_gather tty '250\n2\n200\n300\n4\n16384\n2\n1\n1\n192.168.1.77/24\n')
 expect "interactive answers are used" \
   "RESULT ctid=250 storage=stores disk=200 state=300 cpu=4 ram=16384 gpu=/dev/dri/renderD129 vendor=AMD apps=edge" "$out"
 
 # An empty answer takes the offered default — the lowest free id in the cluster.
-out=$(run_gather tty '\n2\n200\n300\n4\n16384\n2\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '\n2\n200\n300\n4\n16384\n2\n1\n1\n192.168.1.77/24\n')
 expect "the CT id prompt offers the lowest free id" "CT id for the Wolf container [103]" "$out"
 expect "an empty answer takes that default" "RESULT ctid=103 " "$out"
 
 # A taken id re-asks rather than aborting, exactly like an out-of-range one.
-out=$(run_gather tty '101\n99\n250\n2\n200\n300\n4\n16384\n2\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '101\n99\n250\n2\n200\n300\n4\n16384\n2\n1\n1\n192.168.1.77/24\n')
 expect "a taken id re-asks" "CT/VM 101 already exists in this cluster. Pick a free id." "$out"
 expect "an id below the floor re-asks" "Invalid id. Enter a number between 100 and 999999999." "$out"
 expect "the re-asked id is used" "RESULT ctid=250 " "$out"
 
-out=$(run_gather tty '250\n9\n2\n999999\n50\n999999\n100\n99\n4\n999999\n8192\n9\n1\n2\n192.168.1.77/24\n')
+out=$(run_gather tty '250\n9\n2\n999999\n50\n999999\n100\n99\n4\n999999\n8192\n9\n1\n2\n1\n192.168.1.77/24\n')
 expect "out-of-range answers re-ask" "Invalid selection. Enter a number between 1 and 2." "$out"
 expect "out-of-range values re-ask" \
   "RESULT ctid=250 storage=stores disk=50 state=100 cpu=4 ram=8192 gpu=/dev/dri/renderD128 vendor=NVIDIA apps=fedora" "$out"
@@ -220,21 +220,33 @@ expect "unreachable still installs the choice" "apps=fedora"                  "$
 
 # Every size question says what it is measured in, and answers that carry the
 # unit back mean what they say rather than being rejected.
-out=$(run_gather tty '\n2\n\n\n\n\n1\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '\n2\n\n\n\n\n1\n1\n1\n192.168.1.77/24\n')
 expect "the disk question is in GB"   "Disk size for the Wolf CT rootfs (6675 GB free on stores) [100 GB]" "$out"
 expect "the state question is in GB"  "game data — 6575 GB available) [100 GB]"                            "$out"
 expect "the RAM question is in MB"    "RAM for the Wolf CT (host has 64000 MB) [4096 MB]"                  "$out"
 expect "both sizes default to 100 GB" "ctid=103 storage=stores disk=100 state=100 cpu=4 ram=4096"          "$out"
 
-out=$(run_gather tty '\n2\n250G\n300 GB\n8\n8192M\n1\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '\n2\n250G\n300 GB\n8\n8192M\n1\n1\n1\n192.168.1.77/24\n')
 expect "answers may carry their unit" \
   "ctid=103 storage=stores disk=250 state=300 cpu=8 ram=8192 gpu=/dev/dri/renderD128 vendor=NVIDIA" "$out"
 
 # A typo must re-ask. Silently taking the default is how someone ends up with a
 # volume they did not ask for and no sign that the question was ever answered.
-out=$(run_gather tty '\n2\nbig\n0\n120\n\n\n\n1\n1\n192.168.1.77/24\n')
+out=$(run_gather tty '\n2\nbig\n0\n120\n\n\n\n1\n1\n1\n192.168.1.77/24\n')
 expect "a non-numeric size re-asks"   "Invalid value. Enter a whole number between 1 and 6675 GB." "$out"
 expect "the re-asked answer is used"  "ctid=103 storage=stores disk=120 state=100"                 "$out"
+
+# Release channel: upstream stable or beta, for both Wolf and Wolf Den.
+out=$(run_gather notty '' WOLF_LAN_IP=192.168.1.50/24)
+expect "offers the stable channel"     "stable — the current Wolf and Wolf Den release" "$out"
+expect "offers the beta channel"       "beta — upcoming release"                        "$out"
+expect "the channel defaults to stable" "channel=stable"                                "$out"
+
+out=$(run_gather tty '\n2\n\n\n\n\n1\n1\n2\n192.168.1.77/24\n')
+expect "beta can be chosen"            "channel=beta"                                   "$out"
+
+out=$(run_gather notty '' WOLF_CHANNEL=nightly WOLF_LAN_IP=192.168.1.50/24)
+expect "an unknown channel is rejected" "WOLF_CHANNEL='nightly' must be 'stable' or 'beta'" "$out"
 
 # A single GPU needs no question — it is reported and used.
 out=$(run_gather notty '' TWO_GPUS=0 WOLF_LAN_IP=192.168.1.50/24)

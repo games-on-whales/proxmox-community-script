@@ -29,11 +29,13 @@ curl() {
     *releases/latest*)
       [ "${NO_ASSET:-0}" = 0 ] || return 0
       echo '{"browser_download_url": "https://example.invalid/docker-lxc-daemon_0.1.3_amd64.deb"}' ;;
+    *_ping*) [ "${PING_FAIL:-0}" = 0 ] || return 7 ;;
     *) echo DOWNLOAD; [ "${DOWNLOAD_FAIL:-0}" = 0 ] || return 7 ;;
   esac
 }
 apt-get() { echo APT-INSTALL; [ "${APT_FAIL:-0}" = 0 ]; }
 systemctl() { echo "SYSTEMCTL $*"; }
+sleep() { :; }
 HARNESS
   sed -n '/^# ---------- 1\. /,/^# ---------- 2\. /p' install.sh |
     sed -e "s#/usr/bin/docker-lxc-daemon#$fake/bin/docker-lxc-daemon#g" \
@@ -82,4 +84,12 @@ for failure in DOWNLOAD_FAIL=1 APT_FAIL=1; do
   expect CLEAN "$out"
   reject EXIT=0 "$out"
 done
+# A daemon that never puts its socket back must stop the install here, not as
+# a compose error further down.
+out=$(run_daemon INSTALLED=0.1.3 PING_FAIL=1)
+expect 'not answering on /var/run/docker.sock' "$out"
+reject 'docker-lxc-daemon running' "$out"
+expect EXIT=1 "$out"
+out=$(run_daemon INSTALLED=0.1.3)
+expect 'docker-lxc-daemon running' "$out"
 echo "$pass daemon checks passed"
