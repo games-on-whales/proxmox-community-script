@@ -146,6 +146,24 @@ The Compose file reproduces the SmoothNAS `wolf-runtime` + `gpu-*` profiles:
    *"No video received from host"* naming UDP 47998/48000 — ports Wolf never
    uses — so nothing on screen points at the GPU. The installer does all of this
    for you and refuses to continue if it can't.
+
+   **32-bit driver libraries.** `nvidia-ctk` emits only the 64-bit driver, and a
+   Proxmox host has no i386 multiarch, so the `.run` installer skips the 32-bit
+   libraries. Steam's GPU probe and every 32-bit GL/Vulkan program in a session
+   then fall back to llvmpipe (Steam reports `llvmpipe` and builds its shader
+   pre-cache for it). The installer therefore installs
+   `/usr/local/sbin/wolf-nvidia-cdi` ([`nvidia-cdi.sh`](nvidia-cdi.sh)), which
+   regenerates the spec and adds the NVIDIA 32-bit libraries extracted (never
+   installed) from the `.run` of exactly the running driver version — downloaded
+   from `download.nvidia.com` once per driver version, or taken from
+   `WOLF_NVIDIA_RUN=/path/to/NVIDIA-Linux-x86_64-<version>.run` for that run
+   (an offline host). They are kept
+   in `/var/lib/wolf-proxmox/nvidia-lib32/<version>/`; other versions are
+   removed. `wolf-nvidia-cdi.service` re-runs it at every boot, so a driver
+   upgrade is picked up after the reboot; run `wolf-nvidia-cdi` by hand to apply
+   one without rebooting. Set `WOLF_NVIDIA_LIB32=0` (installer environment, or
+   `/etc/default/wolf-nvidia-cdi`) to skip the 32-bit libraries. If the download
+   fails, the spec is still written with the 64-bit driver and a warning.
 4. **Virtual-input udev rules** on the host:
    ```sh
    install -m 0644 85-wolf-virtual-inputs.rules /etc/udev/rules.d/
@@ -184,10 +202,21 @@ discovery.
 
 ## Publishing the image
 
-`docker compose build` builds locally. To publish a shared
-`ghcr.io/games-on-whales/wolf-proxmox` image, run the
-`.github/workflows/wolf-proxmox-image.yml` workflow (manual dispatch), then set
-`WOLF_IMAGE` to the pinned tag/digest.
+`ghcr.io/games-on-whales/wolf-proxmox:latest` is built by
+`.github/workflows/wolf-proxmox-image.yml`. Wolf fixes reach Proxmox only through
+a rebuild, so the workflow runs on its own: daily when `wolf:stable` or
+`wolf-den:stable` has a new digest, and on every push to `main` that changes the
+image's files. The upstream digests it was built from are recorded as image
+labels:
+
+```sh
+docker inspect --format '{{json .Config.Labels}}' ghcr.io/games-on-whales/wolf-proxmox:latest
+```
+
+Run the workflow manually to publish another tag or base (for example
+`wolf_base=ghcr.io/games-on-whales/wolf:vulkan`). `docker compose build` builds
+the image locally instead. Set `WOLF_IMAGE` to a pinned tag or digest to stop
+following `latest`.
 
 ## Configuration
 

@@ -21,6 +21,14 @@ run_uninstall() {
   printf 'WOLF_LAN_IP=192.168.1.50/24\nWOLF_STATE_VOLUME=local-lvm:vm-9000-wolf-state\n' > "$fake/dest/.env"
   : > "$fake/dest/docker-compose.yml"
   printf 'UUID=root / ext4 defaults 0 1\nUUID=state /etc/wolf ext4 defaults,nofail 0 2\n' > "$fake/etc/fstab"
+  # An NVIDIA host: the staged 32-bit libraries, and a spec that mounts them
+  # unless PLAIN_CDI=1 (a spec the generator did not write, or wrote 64-bit only).
+  mkdir -p "$fake/var-lib-wolf/nvidia-lib32/580.1.2" "$fake/etc/cdi"
+  if [ "${PLAIN_CDI:-0}" = 1 ]; then
+    echo '{"containerEdits":{}}' > "$fake/etc/cdi/nvidia.json"
+  else
+    echo "{\"hostPath\":\"$fake/var-lib-wolf/nvidia-lib32/580.1.2/libcuda.so.580.1.2\"}" > "$fake/etc/cdi/nvidia.json"
+  fi
 
   # Some of these calls are silenced by the script itself, so every stub records
   # what it was asked to do in a log the assertions read back.
@@ -66,7 +74,8 @@ udevadm()   { :; }
 STUBS
     # /etc paths into the scratch dir; the mount point and fstab are the two
     # that matter, and redirecting the whole prefix keeps the rest harmless.
-    sed -e "s#/etc/#$fake/etc/#g" uninstall.sh
+    sed -e "s#/etc/#$fake/etc/#g" -e "s#/var/lib/wolf-proxmox#$fake/var-lib-wolf#g" \
+        -e "s#/usr/local/sbin/#$fake/sbin/#g" uninstall.sh
   } > "$fake/run.sh"
 
   local out
@@ -76,6 +85,8 @@ STUBS
   cat "$fake/calls.log" 2>/dev/null || true
   echo "FSTAB-LEFT: $(tr '\n' '|' < "$fake/etc/fstab" 2>/dev/null || echo gone)"
   [ -d "$fake/dest" ] && echo "DEST-LEFT: yes"
+  [ -e "$fake/var-lib-wolf" ] && echo "LIB32-LEFT: yes"
+  [ -e "$fake/etc/cdi/nvidia.json" ] && echo "CDI-LEFT: yes"
   rm -rf "$fake"
 }
 
@@ -100,6 +111,14 @@ expect "uninstalls the daemon package"        "APT purge -y docker-lxc-daemon"  
 expect "unmounts the state volume"            "UMOUNT"                                     "$out"
 expect "removes the recipe directory"         "removed"                                    "$out"
 reject "removes the recipe directory (gone)"  "DEST-LEFT: yes"                             "$out"
+
+# The staged 32-bit libraries go, and so does a spec that still mounts them —
+# the daemon regenerates a plain one on demand. Any other spec is left alone.
+expect "disables the NVIDIA CDI refresh"      "SYSTEMCTL disable wolf-nvidia-cdi.service"  "$out"
+reject "removes the 32-bit libraries"         "LIB32-LEFT: yes"                            "$out"
+reject "removes the spec that mounts them"    "CDI-LEFT: yes"                              "$out"
+out_plain=$(PLAIN_CDI=1 run_uninstall --yes)
+expect "keeps a spec that does not mount them" "CDI-LEFT: yes"                             "$out_plain"
 
 # fstab is edited on the mount-point field, so nothing else in it can be caught.
 expect "drops the /etc/wolf fstab line"       "FSTAB-LEFT: UUID=root / ext4 defaults 0 1|" "$out"
