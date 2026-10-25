@@ -34,12 +34,16 @@ defaulting to the first entry, auto-selected when there is only one candidate.
 | App image build | `edge` or `fedora`, checked against ghcr | `edge` |
 | Wolf release channel | `stable` or `beta` (Wolf and Wolf Den) | `stable` |
 | Static LAN IP (CIDR) | must be CIDR | — |
+| Keyboard layout for the apps | XKB layout (`de`, `fr`, `us,de`, …); `-` for none | the host's (`/etc/default/keyboard`) |
+| Locale for the apps | locale name (`de_DE.UTF-8`, …); `-` for none | the host's (`/etc/default/locale`) |
+| Timezone for the apps | zone name (`Europe/Berlin`, …); `-` for none | the host's (`timedatectl`) |
 
 `nvidia_drm modeset=1` is probed before the GPU scan, since NVIDIA cards expose
 no render node without it. The bridge spec is derived from the LAN IP and the
 host's default route. To run unattended, preset `WOLF_CTID`, `DLD_STORAGE`,
 `WOLF_LAN_IP`, `WOLF_DISK_SIZE`, `WOLF_STATE_SIZE`, `WOLF_CPUS`, `WOLF_MEMORY`,
-`WOLF_RENDER_NODE`, `WOLF_IMAGE_TAG`, `WOLF_CHANNEL` (and optionally
+`WOLF_RENDER_NODE`, `WOLF_IMAGE_TAG`, `WOLF_CHANNEL`, `WOLF_KEYBOARD` (and
+optionally `WOLF_KEYBOARD_VARIANT`), `WOLF_LOCALE`, `WOLF_TZ` (and optionally
 `WOLF_BRIDGE`) — anything left unset takes
 its default, and a preset that isn't a real candidate, or doesn't fit the host,
 aborts the install. Every size question states its unit and accepts the unit
@@ -230,7 +234,8 @@ both CTs bind from the same host directory.
 On first start `wolf-config-init.sh` seeds `/etc/wolf/cfg/config.toml` with a
 fresh host uuid and the default app profile set (`config/default-config.toml` —
 Wolf UI, desktops, Steam, RetroArch, …), and on every start it pins the GOW app
-images to `WOLF_IMAGE_TAG`. The upstream image's own startup does the rest
+images to `WOLF_IMAGE_TAG` and applies the keyboard layout, locale and timezone
+(see below). The upstream image's own startup does the rest
 (`fake-udev`, PulseAudio, Wolf). Edit `/etc/wolf/cfg/config.toml` afterwards (or
 use Wolf Den) to customise apps; it is preserved across restarts.
 
@@ -245,6 +250,18 @@ fall back to llvmpipe software rendering, which Wolf's capture/encode pipeline
 cannot negotiate (black screen) — set `WOLF_IMAGE_TAG=edge` in `.env` and restart
 if you hit that. The tags are rewritten in `config.toml` on every start, so
 switching is just an edit plus a restart.
+
+**Keyboard layout, locale and timezone:** without them every session comes up
+with a US keyboard, English UI and UTC. The installer asks for all three,
+defaulting to the host's own, and writes them to `.env` as `WOLF_KEYBOARD`
+(plus `WOLF_KEYBOARD_VARIANT`, e.g. `nodeadkeys`), `WOLF_LOCALE` and `WOLF_TZ`.
+On every start `wolf-config-init.sh` adds them to the `env` of every docker app
+in `config.toml` — including apps added later through Wolf Den — as
+`XKB_DEFAULT_LAYOUT`, `XKB_DEFAULT_VARIANT`, `LANG`, `LANGUAGE` (e.g.
+`de_DE:de`) and `TZ`. An app that sets one of these itself keeps its own value.
+Changing or clearing a setting in `.env` updates the entries the recipe wrote on
+the next restart; it remembers which those were in
+`/etc/wolf/cfg/.wolf-proxmox-env`.
 
 **Game data / disk space:** Wolf stores its state, its client pairings and
 per-app game data (Steam libraries) under `/etc/wolf`. The installer backs that

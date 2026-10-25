@@ -54,6 +54,12 @@ services:
       WOLF_ENCODER_NODE: ${WOLF_ENCODER_NODE:-}
       # Tag for the GOW app images seeded into config.toml (firefox, steam, ...).
       WOLF_IMAGE_TAG: ${WOLF_IMAGE_TAG:-edge}
+      # Keyboard layout, locale and timezone added to every app's env (same
+      # script). Empty leaves the apps' own default.
+      WOLF_KEYBOARD: ${WOLF_KEYBOARD:-}
+      WOLF_KEYBOARD_VARIANT: ${WOLF_KEYBOARD_VARIANT:-}
+      WOLF_LOCALE: ${WOLF_LOCALE:-}
+      WOLF_TZ: ${WOLF_TZ:-}
       # Only used if Wolf falls back to a PulseAudio sidecar; the upstream image
       # normally runs PulseAudio itself.
       WOLF_PULSE_IMAGE: ghcr.io/games-on-whales/pulseaudio:${WOLF_IMAGE_TAG:-edge}
@@ -61,8 +67,9 @@ services:
       WOLF_STOP_CONTAINER_ON_EXIT: "${WOLF_STOP_CONTAINER_ON_EXIT:-TRUE}"
 
     volumes:
-      # Seeds config.toml on first start and pins the app image tags on every
-      # start (wolf-config-init.sh); the upstream entrypoint sources it.
+      # Seeds config.toml on first start and pins the app image tags and
+      # keyboard/locale/timezone on every start (wolf-config-init.sh); the
+      # upstream entrypoint sources it.
       - ./wolf-config-init.sh:/etc/cont-init.d/40-wolf-proxmox.sh:ro
       - ./config/default-config.toml:/opt/wolf-proxmox/default-config.toml:ro
       - /etc/wolf:/etc/wolf
