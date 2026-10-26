@@ -9,11 +9,16 @@
 #   fresh uuid. Without it Wolf generates its own default, which does not carry
 #   this recipe's app list.
 # - Every start: pin the GOW app images to WOLF_IMAGE_TAG, so changing it in
-#   .env takes effect on the next restart.
+#   .env takes effect on the next `docker compose up -d`.
 # - Every start: give every docker app the keyboard layout, locale and timezone
 #   from .env (WOLF_KEYBOARD, WOLF_KEYBOARD_VARIANT, WOLF_LOCALE, WOLF_TZ), so
 #   apps added later through Wolf Den get them too. See below for how values an
 #   app sets itself are kept.
+# - Every start: set PROTON_LOG the same way from WOLF_PROTON_LOG, off unless
+#   set. A game that throws in a loop can log gigabytes a minute into /etc/wolf.
+# - Every start: hand $XDG_RUNTIME_DIR back to root. Every session app chowns
+#   the shared dir to its own user, and the embedded PulseAudio (root) refuses
+#   to start in a runtime dir it does not own.
 
 wolf_cfg_file="${HOST_APPS_STATE_FOLDER:-/etc/wolf}/cfg/config.toml"
 wolf_default_cfg=/opt/wolf-proxmox/default-config.toml
@@ -38,6 +43,16 @@ fi
 if [[ ! "${WOLF_TZ:-}" =~ ^[A-Za-z0-9_+/-]*$ ]]; then
   echo "Invalid WOLF_TZ: ${WOLF_TZ}" >&2
   return 1
+fi
+# 1, or a Wine debug channel list such as +seh,+timestamp.
+if [[ ! "${WOLF_PROTON_LOG:-}" =~ ^[A-Za-z0-9_,+-]*$ ]]; then
+  echo "Invalid WOLF_PROTON_LOG: ${WOLF_PROTON_LOG}" >&2
+  return 1
+fi
+
+if [[ -n "${XDG_RUNTIME_DIR:-}" && "$XDG_RUNTIME_DIR" != / && -d "$XDG_RUNTIME_DIR" ]]; then
+  chown 0:0 "$XDG_RUNTIME_DIR" && chmod 0755 "$XDG_RUNTIME_DIR" ||
+    echo "Cannot hand ${XDG_RUNTIME_DIR} back to root; PulseAudio may not start" >&2
 fi
 
 mkdir -p "$(dirname "$wolf_cfg_file")"
@@ -66,14 +81,18 @@ case "$wolf_lang" in
 esac
 wolf_env_want="XKB_DEFAULT_LAYOUT=${WOLF_KEYBOARD:-}|XKB_DEFAULT_VARIANT=${WOLF_KEYBOARD_VARIANT:-}"
 wolf_env_want+="|LANG=${WOLF_LOCALE:-}|LANGUAGE=${wolf_language}|TZ=${WOLF_TZ:-}"
+wolf_env_want+="|PROTON_LOG=${WOLF_PROTON_LOG:-}"
 wolf_env_prev=""
 if [[ -f "$wolf_env_state" ]]; then wolf_env_prev=$(cat "$wolf_env_state"); fi
+# Configs seeded before WOLF_PROTON_LOG existed carry the old default
+# PROTON_LOG=1 in the Steam app; count it as the recipe's so .env decides.
+[[ "|${wolf_env_prev}" == *"|PROTON_LOG="* ]] || wolf_env_prev+="|PROTON_LOG=1"
 
 # Edits each docker runner's env array. A variable the app does not have is
 # added; one still holding the value the last start wrote follows .env, or is
 # dropped when .env no longer sets it; any other value was set for that app and
 # is left alone. Runs in the image's awk, so POSIX awk only.
-gow_log "Applying keyboard, locale and timezone to the apps"
+gow_log "Applying keyboard, locale, timezone and Proton logging to the apps"
 if ! awk -v want="$wolf_env_want" -v prev="$wolf_env_prev" '
   function ml_scan(s,   p, q) { # tracks """ / triple-single-quote strings across lines
     while (s != "") {

@@ -60,6 +60,8 @@ services:
       WOLF_KEYBOARD_VARIANT: ${WOLF_KEYBOARD_VARIANT:-}
       WOLF_LOCALE: ${WOLF_LOCALE:-}
       WOLF_TZ: ${WOLF_TZ:-}
+      # Proton's per-game log, off unless set (same script).
+      WOLF_PROTON_LOG: ${WOLF_PROTON_LOG:-}
       # Only used if Wolf falls back to a PulseAudio sidecar; the upstream image
       # normally runs PulseAudio itself.
       WOLF_PULSE_IMAGE: ghcr.io/games-on-whales/pulseaudio:${WOLF_IMAGE_TAG:-edge}

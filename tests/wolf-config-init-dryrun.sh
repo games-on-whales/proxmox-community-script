@@ -19,9 +19,17 @@ trap 'rm -rf "$work"' EXIT
 sed "s#/opt/wolf-proxmox/default-config.toml#$PWD/config/default-config.toml#" \
   wolf-config-init.sh > "$work/init.sh"
 
+# chown/chmod are stubbed: the runtime dir reset needs root, and must never
+# touch the caller's own XDG_RUNTIME_DIR.
+mkdir -p "$work/bin" "$work/run"
+for c in chown chmod; do
+  printf '#!/bin/sh\necho "%s $*" >> "%s/calls"\n' "$c" "$work" > "$work/bin/$c"
+  chmod +x "$work/bin/$c"
+done
+
 run_init() { # run_init <state dir> [env...] — source like /entrypoint.sh does
   local state="$1"; shift
-  env HOST_APPS_STATE_FOLDER="$state" "$@" bash -c '
+  env PATH="$work/bin:$PATH" XDG_RUNTIME_DIR="$work/run" HOST_APPS_STATE_FOLDER="$state" "$@" bash -c '
     set -e
     gow_log() { echo "$*"; }
     source "$1"
@@ -155,8 +163,54 @@ for v in 'WOLF_KEYBOARD=de"' 'WOLF_LOCALE=de DE' 'WOLF_TZ=Europe/Berlin|x'; do
   esac
 done
 
+# Proton logging is off by default, and the PROTON_LOG=1 that older seeds put
+# in the Steam app goes with it; per-app values stay.
+case "$(cat "$work/none/cfg/config.toml")" in
+  *PROTON_LOG*) bad "Proton logging is off by default" "no PROTON_LOG" ;;
+  *) ok "Proton logging is off by default" ;;
+esac
+state="$work/proton"
+run_init "$state" >/dev/null
+cfg="$state/cfg/config.toml"
+sed -i '/^name = "WolfSteam"/,/RUN_SWAY=true/ s#^    "RUN_SWAY=true",#    "PROTON_LOG=1",\n&#' "$cfg"
+expect "the test config has the old seeded PROTON_LOG" '"PROTON_LOG=1"' "$(cat "$cfg")"
+rm -f "$state/cfg/.wolf-proxmox-env"
+printf '\n[[profiles.apps]]\ntitle = "Mine"\n\n[profiles.apps.runner]\ntype = "docker"\nenv = ["PROTON_LOG=+seh"]\n' >> "$cfg"
+run_init "$state" WOLF_TZ=UTC >/dev/null
+all=$(cat "$cfg")
+case "$all" in
+  *'"PROTON_LOG=1"'*) bad "an old seeded PROTON_LOG=1 is dropped" "no PROTON_LOG=1" ;;
+  *) ok "an old seeded PROTON_LOG=1 is dropped" ;;
+esac
+expect "a per-app PROTON_LOG is kept" 'env = ["PROTON_LOG=+seh", "TZ=UTC"]' "$all"
+run_init "$state" WOLF_PROTON_LOG=1 >/dev/null
+docker_apps=$(grep -cE "^type = ['\"]docker['\"]" "$cfg")
+n=$(grep -o '"PROTON_LOG=1"' "$cfg" | wc -l)
+if [ "$n" -eq $((docker_apps - 1)) ]; then ok "WOLF_PROTON_LOG=1 turns it on"
+else bad "WOLF_PROTON_LOG=1 turns it on" "$((docker_apps - 1)), got $n"; fi
+run_init "$state" >/dev/null
+case "$(cat "$cfg")" in
+  *'"PROTON_LOG=1"'*) bad "clearing WOLF_PROTON_LOG turns it off again" "no PROTON_LOG=1" ;;
+  *) ok "clearing WOLF_PROTON_LOG turns it off again" ;;
+esac
+out=$(run_init "$work/badproton" 'WOLF_PROTON_LOG=1"' || true)
+case "$out" in
+  *"Invalid WOLF_PROTON_LOG"*) case "$out" in *"ENTRYPOINT CONTINUED"*) bad "an invalid WOLF_PROTON_LOG aborts" "abort" ;; *) ok "an invalid WOLF_PROTON_LOG aborts" ;; esac ;;
+  *) bad "an invalid WOLF_PROTON_LOG aborts" "Invalid WOLF_PROTON_LOG" ;;
+esac
+
+# The shared runtime dir goes back to root before PulseAudio starts, and a
+# failure to do so is reported without stopping the start.
+expect "the runtime dir is handed back to root" "chown 0:0 $work/run
+chmod 0755 $work/run" "$(cat "$work/calls")"
+printf '#!/bin/sh\nexit 1\n' > "$work/bin/chown"
+out=$(run_init "$work/nochown")
+expect "a failed runtime dir reset is reported" "Cannot hand $work/run back to root" "$out"
+expect "a failed runtime dir reset does not stop the start" "ENTRYPOINT CONTINUED" "$out"
+printf '#!/bin/sh\n:\n' > "$work/bin/chown"
+
 # Sourced into the entrypoint's shell, so it must not leak its own variables.
-leak=$(env HOST_APPS_STATE_FOLDER="$work/leak" bash -c '
+leak=$(env PATH="$work/bin:$PATH" XDG_RUNTIME_DIR="$work/run" HOST_APPS_STATE_FOLDER="$work/leak" bash -c '
   set -e; gow_log() { :; }; source "$1"
   echo "${wolf_cfg_file-unset} ${wolf_default_cfg-unset} ${wolf_env_want-unset} ${wolf_env_prev-unset}"' _ "$work/init.sh")
 expect "leaves no variables behind" "unset unset unset unset" "$leak"
