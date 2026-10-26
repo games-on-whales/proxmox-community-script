@@ -247,9 +247,17 @@ come from `WOLF_CHANNEL` and are unaffected**. The installer checks the tag real
 is published on ghcr before writing it, so a typo fails at install rather than as
 an app that silently won't launch. On NVIDIA, non-`edge` builds have been seen to
 fall back to llvmpipe software rendering, which Wolf's capture/encode pipeline
-cannot negotiate (black screen) — set `WOLF_IMAGE_TAG=edge` in `.env` and restart
-if you hit that. The tags are rewritten in `config.toml` on every start, so
-switching is just an edit plus a restart.
+cannot negotiate (black screen) — set `WOLF_IMAGE_TAG=edge` in `.env` and apply
+it if you hit that. The tags are rewritten in `config.toml` on every start, so
+switching is just an edit plus `docker compose up -d`.
+
+**Applying `.env` changes:** run `docker compose up -d` in the recipe directory.
+Compose recreates the containers whose settings changed; `docker restart wolf`
+does not read `.env` and keeps the old values. With `WOLF_CTID` pinned,
+docker-lxc-daemon 0.1.3 fails that recreate with `allocate VMID: <id> is already
+in use by a guest in this cluster`, because Compose creates the replacement
+before it removes the old container. On those releases use
+`docker compose rm -sf wolf && docker compose up -d` instead.
 
 **Keyboard layout, locale and timezone:** without them every session comes up
 with a US keyboard, English UI and UTC. The installer asks for all three,
@@ -259,9 +267,19 @@ On every start `wolf-config-init.sh` adds them to the `env` of every docker app
 in `config.toml` — including apps added later through Wolf Den — as
 `XKB_DEFAULT_LAYOUT`, `XKB_DEFAULT_VARIANT`, `LANG`, `LANGUAGE` (e.g.
 `de_DE:de`) and `TZ`. An app that sets one of these itself keeps its own value.
-Changing or clearing a setting in `.env` updates the entries the recipe wrote on
-the next restart; it remembers which those were in
+Changing or clearing a setting in `.env` updates the entries the recipe wrote
+once applied (`docker compose up -d`); it remembers which those were in
 `/etc/wolf/cfg/.wolf-proxmox-env`.
+
+**Proton logs:** off by default. Set `WOLF_PROTON_LOG=1` in `.env` (or a Wine
+debug channel list such as `+seh,+timestamp`) and apply it with
+`docker compose up -d` to have Proton write
+`steam-<appid>.log` into the app's home under `/etc/wolf` while you debug a
+game, then clear it again: a game that throws in a loop can log tens of MB a
+second until `/etc/wolf` is full. It is applied as `PROTON_LOG` the same way as
+the settings above, so an app that sets its own keeps it. The `PROTON_LOG=1`
+that earlier versions seeded into the Steam app is removed on the next start
+unless `WOLF_PROTON_LOG` asks for it.
 
 **Game data / disk space:** Wolf stores its state, its client pairings and
 per-app game data (Steam libraries) under `/etc/wolf`. The installer backs that
