@@ -155,11 +155,34 @@ for v in 'WOLF_KEYBOARD=de"' 'WOLF_LOCALE=de DE' 'WOLF_TZ=Europe/Berlin|x'; do
   esac
 done
 
+# A session container chowned the shared runtime dir to 1000 with mode 700 (#19):
+# the next start hands it back to root:root 0755 so PulseAudio comes up. As a
+# non-root user (CI) only the mode can be checked.
+rt="$work/run-wolf"
+mkdir -p "$rt"; chmod 700 "$rt"
+if [ "$(id -u)" -eq 0 ]; then chown 1000:1000 "$rt"; fi
+out=$(run_init "$work/rt" XDG_RUNTIME_DIR="$rt")
+expect "a taken-over runtime dir is reported" "Resetting $rt" "$out"
+expect "a taken-over runtime dir does not stop the start" "ENTRYPOINT CONTINUED" "$out"
+if [ "$(stat -c '%a' "$rt")" = 755 ]; then ok "the runtime dir is 0755 again"
+else bad "the runtime dir is 0755 again" "755, got $(stat -c '%a' "$rt")"; fi
+if [ "$(id -u)" -eq 0 ]; then
+  if [ "$(stat -c '%u:%g' "$rt")" = 0:0 ]; then ok "the runtime dir is root:root again"
+  else bad "the runtime dir is root:root again" "0:0, got $(stat -c '%u:%g' "$rt")"; fi
+  out=$(run_init "$work/rt" XDG_RUNTIME_DIR="$rt")
+  case "$out" in
+    *Resetting*) bad "a runtime dir that is already right is left alone" "no Resetting" ;;
+    *) ok "a runtime dir that is already right is left alone" ;;
+  esac
+fi
+out=$(run_init "$work/rt" XDG_RUNTIME_DIR="$work/does-not-exist")
+expect "a missing runtime dir is no error" "ENTRYPOINT CONTINUED" "$out"
+
 # Sourced into the entrypoint's shell, so it must not leak its own variables.
 leak=$(env HOST_APPS_STATE_FOLDER="$work/leak" bash -c '
   set -e; gow_log() { :; }; source "$1"
-  echo "${wolf_cfg_file-unset} ${wolf_default_cfg-unset} ${wolf_env_want-unset} ${wolf_env_prev-unset}"' _ "$work/init.sh")
-expect "leaves no variables behind" "unset unset unset unset" "$leak"
+  echo "${wolf_cfg_file-unset} ${wolf_default_cfg-unset} ${wolf_env_want-unset} ${wolf_env_prev-unset} ${wolf_runtime_dir-unset}"' _ "$work/init.sh")
+expect "leaves no variables behind" "unset unset unset unset unset" "$leak"
 
 echo
 echo "  ${pass} passed, ${fail} failed"

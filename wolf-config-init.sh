@@ -14,6 +14,10 @@
 #   from .env (WOLF_KEYBOARD, WOLF_KEYBOARD_VARIANT, WOLF_LOCALE, WOLF_TZ), so
 #   apps added later through Wolf Den get them too. See below for how values an
 #   app sets itself are kept.
+# - Every start: hand XDG_RUNTIME_DIR back to root:root 0755. It is shared with
+#   the session containers, and their 10-setup_user.sh chowns it to PUID:PGID
+#   with mode 700; the embedded PulseAudio (root) then refuses to start on the
+#   next Wolf restart (#19).
 
 wolf_cfg_file="${HOST_APPS_STATE_FOLDER:-/etc/wolf}/cfg/config.toml"
 wolf_default_cfg=/opt/wolf-proxmox/default-config.toml
@@ -38,6 +42,15 @@ fi
 if [[ ! "${WOLF_TZ:-}" =~ ^[A-Za-z0-9_+/-]*$ ]]; then
   echo "Invalid WOLF_TZ: ${WOLF_TZ}" >&2
   return 1
+fi
+
+wolf_runtime_dir="${XDG_RUNTIME_DIR:-}"
+if [[ -n "$wolf_runtime_dir" && -d "$wolf_runtime_dir" ]] &&
+  [[ "$(stat -c '%u:%g:%a' "$wolf_runtime_dir")" != "0:0:755" ]]; then
+  gow_log "Resetting ${wolf_runtime_dir} ($(stat -c '%u:%g %a' "$wolf_runtime_dir")) to root:root 0755"
+  if ! { chmod 755 "$wolf_runtime_dir" && chown root:root "$wolf_runtime_dir"; }; then
+    echo "Could not reset ${wolf_runtime_dir}; PulseAudio may not start" >&2
+  fi
 fi
 
 mkdir -p "$(dirname "$wolf_cfg_file")"
@@ -203,4 +216,4 @@ fi
 mv -f "${wolf_cfg_file}.tmp" "$wolf_cfg_file"
 echo "$wolf_env_want" >"$wolf_env_state"
 
-unset wolf_cfg_file wolf_default_cfg wolf_env_state wolf_lang wolf_language wolf_env_want wolf_env_prev
+unset wolf_runtime_dir wolf_cfg_file wolf_default_cfg wolf_env_state wolf_lang wolf_language wolf_env_want wolf_env_prev

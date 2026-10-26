@@ -234,8 +234,10 @@ both CTs bind from the same host directory.
 On first start `wolf-config-init.sh` seeds `/etc/wolf/cfg/config.toml` with a
 fresh host uuid and the default app profile set (`config/default-config.toml` —
 Wolf UI, desktops, Steam, RetroArch, …), and on every start it pins the GOW app
-images to `WOLF_IMAGE_TAG` and applies the keyboard layout, locale and timezone
-(see below). The upstream image's own startup does the rest
+images to `WOLF_IMAGE_TAG`, applies the keyboard layout, locale and timezone
+(see below), and hands `${WOLF_RUNTIME_DIR}` back to `root:root` 0755 (session
+containers chown it to their user, which would keep the embedded PulseAudio from
+starting). The upstream image's own startup does the rest
 (`fake-udev`, PulseAudio, Wolf). Edit `/etc/wolf/cfg/config.toml` afterwards (or
 use Wolf Den) to customise apps; it is preserved across restarts.
 
